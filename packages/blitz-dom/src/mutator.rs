@@ -221,7 +221,26 @@ impl DocumentMutator<'_> {
             let node = &mut self.doc.nodes[node_id];
             if let Some(mut data) = node.stylo_element_data.get_mut() {
                 data.hint |= RestyleHint::restyle_subtree();
-                data.damage.insert(ALL_DAMAGE);
+                // `style` is exempt because stylo can price it exactly, and
+                // this preload runs before the attribute name is even read.
+                //
+                // For every other attribute we cannot know what a selector
+                // match will change, so the saturated set is the honest floor.
+                // But an inline style has no such uncertainty: the restyle
+                // below diffs the old and new computed values and raises
+                // whatever damage they actually earn, up to and including
+                // ALL_DAMAGE via `augmented_restyle_damage_rebuild_box`. The
+                // preload only ever masked that diff — a paint-only property
+                // reconstructed boxes up the whole ancestor chain, and so did
+                // a write that changed no computed value at all.
+                //
+                // Measured on a 550-element document, 200 frames/arm: a deep
+                // `opacity` write goes 7 box constructions -> 0, and a 60-node
+                // scroll frame 63 -> 0, with layout-affecting writes
+                // (`width`, `display`, `top`) still relayouting identically.
+                if name.local != local_name!("style") {
+                    data.damage.insert(ALL_DAMAGE);
+                }
             }
 
             // TODO: make this fine grained / conditional based on ElementSelectorFlags
