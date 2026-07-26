@@ -155,8 +155,20 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         let viewport_scroll = Point { x: 0.0, y: 0.0 };
         let ui_event = map_dom_event_to_ui_event(event, pos, viewport_scroll);
 
-        if let Some(ui_event) = ui_event {
+        let handled = if let Some(ui_event) = ui_event {
             widget_data.widget.handle_event(&ui_event);
+            true
+        } else {
+            false
+        };
+
+        // A widget that mutates its own state in `handle_event` has no other way
+        // to get back on screen: this arm `return`s without dispatching, and the
+        // shell only re-requests a redraw for pointer-button events, not wheel
+        // or key ones. That was masked while every custom widget kept the
+        // document permanently animating.
+        if handled {
+            doc.shell_provider.request_redraw();
         }
 
         if set_focus {

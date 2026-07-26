@@ -1589,8 +1589,19 @@ impl BaseDocument {
     }
 
     pub fn is_animating(&self) -> bool {
+        // Ask each widget whether it is actually animating. Previously the mere
+        // presence of a custom-widget node forced this to `true`, which made
+        // `View::redraw` re-request a redraw forever: a static widget pinned the
+        // event loop awake and burned a full CPU core on an idle window.
+        // `Widget::is_animating` defaults to `true`, so widgets that do not
+        // override it keep the old behaviour.
         #[cfg(feature = "custom-widget")]
-        let has_custom_widgets = !self.custom_widget_nodes.is_empty();
+        let has_custom_widgets = self.custom_widget_nodes.iter().any(|node_id| {
+            self.get_node(*node_id)
+                .and_then(|node| node.element_data())
+                .and_then(|el| el.custom_widget_data())
+                .is_some_and(|data| data.widget.is_animating())
+        });
         #[cfg(not(feature = "custom-widget"))]
         let has_custom_widgets = false;
 

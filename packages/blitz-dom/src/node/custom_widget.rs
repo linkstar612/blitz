@@ -101,6 +101,20 @@ pub trait Widget {
         let _ = event;
     }
 
+    /// Whether this widget currently needs to be repainted continuously.
+    ///
+    /// `Document::is_animating()` ORs this across every mounted widget, and the
+    /// shell re-requests a redraw for as long as it holds — so returning `true`
+    /// pins the event loop awake and burns a core even when the window is idle.
+    ///
+    /// Defaults to `true` to preserve the previous behaviour, where merely
+    /// mounting a custom widget marked the document as animating. Widgets whose
+    /// content only changes in response to events should override this and
+    /// return `true` only while an animation is actually in flight.
+    fn is_animating(&self) -> bool {
+        true
+    }
+
     /// Callback for the widget to paint it's content.
     ///
     /// Output is recorded to an AnyRender `Scene`.
