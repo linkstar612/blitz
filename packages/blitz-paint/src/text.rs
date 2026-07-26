@@ -10,7 +10,7 @@ use style::values::computed::{
 };
 use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
 
-use crate::color::{Color, ToColorColor as _};
+use crate::color::{ToColorColor as _, is_invisible};
 use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 
 /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
@@ -50,7 +50,7 @@ pub(crate) fn draw_inline_backgrounds<'a>(
                 .background_color
                 .resolve_to_absolute(&current_color)
                 .as_srgb_color();
-            if bg_color == Color::TRANSPARENT {
+            if is_invisible(bg_color) {
                 continue;
             }
 
