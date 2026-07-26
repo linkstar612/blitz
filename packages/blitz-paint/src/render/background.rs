@@ -1,5 +1,5 @@
 use super::{ElementCx, to_image_quality, to_peniko_image};
-use crate::color::{Color, ToColorColor};
+use crate::color::{ToColorColor, is_invisible};
 use crate::gradient::to_peniko_gradient;
 use anyrender::PaintScene;
 use blitz_dom::node::{ImageData, ImageResourceData, SpecialElementData};
@@ -252,7 +252,7 @@ impl ElementCx<'_, '_> {
                 .resolve_to_absolute(&current_color)
                 .as_srgb_color();
 
-            if bg_color != Color::TRANSPARENT {
+            if !is_invisible(bg_color) {
                 // Fill the color
                 scene.fill(Fill::NonZero, self.transform, bg_color, None, &shape);
             }
@@ -268,7 +268,7 @@ impl ElementCx<'_, '_> {
             .resolve_to_absolute(&current_color)
             .as_srgb_color();
 
-        if bg_color != Color::TRANSPARENT {
+        if !is_invisible(bg_color) {
             // Fill the color
             scene.fill(Fill::NonZero, self.transform, bg_color, None, shape);
         }

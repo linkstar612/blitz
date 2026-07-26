@@ -24,6 +24,22 @@ impl ToColorColor for AbsoluteColor {
     }
 }
 
+/// Whether `color` is too faint to put a single unit of alpha on screen.
+///
+/// Submitting one is not merely wasteful: a solid paint whose premultiplied
+/// alpha byte is zero is what `vello_hybrid` reserves to mark a clip strip
+/// (`schedule.rs::process_paint`), so it asserts in debug builds and silently
+/// mis-reads the paint as a clip in release. Skipping such a paint is a
+/// rendering no-op — it had no visible effect to lose.
+///
+/// This is the test to use everywhere a paint may be transparent. Comparing
+/// against [`Color::TRANSPARENT`] is NOT equivalent: that only catches exactly
+/// `rgba(0, 0, 0, 0)` and lets through any faint colour with non-zero
+/// channels, such as one produced by `multiply_alpha` part-way through a fade.
+pub(crate) fn is_invisible(color: Color) -> bool {
+    color.premultiply().to_rgba8().a == 0
+}
+
 /// The WCAG contrast ratio (>= 1) between two colours, matching Chrome's
 /// `color_utils::GetContrastRatio`.
 pub(crate) fn contrast_ratio(a: Color, b: Color) -> f32 {

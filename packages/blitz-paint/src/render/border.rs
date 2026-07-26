@@ -9,7 +9,7 @@ use style::{
 };
 
 use crate::{
-    color::{ToColorColor as _, contrast_ratio},
+    color::{ToColorColor as _, contrast_ratio, is_invisible},
     kurbo_css::Edge,
     render::ElementCx,
 };
@@ -543,7 +543,7 @@ impl ElementCx<'_, '_> {
             .as_srgb_color();
 
         // No need to draw transparent borders (as they won't be visible anyway)
-        if border_color == Color::TRANSPARENT {
+        if is_invisible(border_color) {
             return;
         }
 

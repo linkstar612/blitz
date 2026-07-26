@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::kurbo_css::CssBox;
-use crate::color::{Color, ToColorColor};
+use crate::color::{Color, ToColorColor, is_invisible};
 use crate::debug_overlay::render_debug_overlay;
 use crate::filters::convert_filters;
 use crate::kurbo_css::NonUniformRoundedRectRadii;
@@ -658,13 +658,10 @@ impl ElementCx<'_, '_> {
                         Rect::new(rect.x0, padding_box.y0, rect.x1, padding_box.y1)
                     }
                 };
-                scene.fill(
-                    Fill::NonZero,
-                    self.transform,
-                    track_color.multiply_alpha(opacity),
-                    None,
-                    &track_rect,
-                );
+                let track_color = track_color.multiply_alpha(opacity);
+                if !is_invisible(track_color) {
+                    scene.fill(Fill::NonZero, self.transform, track_color, None, &track_rect);
+                }
             }
 
             let this = ScrollbarRef { node_id, axis };
@@ -682,25 +679,35 @@ impl ElementCx<'_, '_> {
                 AbsoluteAxis::Horizontal => rect.height() / 2.0,
                 AbsoluteAxis::Vertical => rect.width() / 2.0,
             };
-            scene.fill(
-                Fill::NonZero,
-                self.transform,
-                color.multiply_alpha(opacity),
-                None,
-                &rect.to_rounded_rect(radius),
-            );
+            // The fade is continuous, so its final frames land on colours too
+            // faint to put a unit of alpha on screen — which the hybrid renderer
+            // reserves for clip strips. `opacity == 0.0` above catches only the
+            // resting state, not the tail.
+            let thumb_color = color.multiply_alpha(opacity);
+            if !is_invisible(thumb_color) {
+                scene.fill(
+                    Fill::NonZero,
+                    self.transform,
+                    thumb_color,
+                    None,
+                    &rect.to_rounded_rect(radius),
+                );
+            }
             // Contrast stroke, default thumbs only: an author-specified
             // scrollbar-color is rendered exactly as given.
             if custom_thumb.is_none() {
-                let stroke_width = self.scale;
-                let stroke_rect = rect.inset(-stroke_width / 2.0);
-                scene.stroke(
-                    &Stroke::new(stroke_width),
-                    self.transform,
-                    stroke_color.multiply_alpha(opacity),
-                    None,
-                    &stroke_rect.to_rounded_rect(radius - stroke_width / 2.0),
-                );
+                let stroke_color = stroke_color.multiply_alpha(opacity);
+                if !is_invisible(stroke_color) {
+                    let stroke_width = self.scale;
+                    let stroke_rect = rect.inset(-stroke_width / 2.0);
+                    scene.stroke(
+                        &Stroke::new(stroke_width),
+                        self.transform,
+                        stroke_color,
+                        None,
+                        &stroke_rect.to_rounded_rect(radius - stroke_width / 2.0),
+                    );
+                }
             }
         }
     }
