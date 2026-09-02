@@ -137,7 +137,20 @@ impl ApplicationHandler for DioxusNativeApplication {
         #[cfg(feature = "tracing")]
         tracing::debug!("Injecting document provider into all windows");
 
-        if let Some(config) = self.pending_window.take() {
+        // Every window this application creates gets the same window-bound
+        // contexts: the primary handed to `new()` and every `add_window`
+        // secondary still pending. Before this, only the primary was injected;
+        // `BlitzApplication::can_create_surfaces` drained the secondaries bare,
+        // so a secondary whose root used `use_window()`, `document::*` or the
+        // router panicked on the missing context at its first render
+        // (polyvox-vrc R-OCK.10). Secondaries are also built here, after
+        // injection: a caller must not `initial_build` them first, since
+        // `VirtualDom::rebuild` appends the root a second time.
+        let mut configs: Vec<WindowConfig<DioxusNativeWindowRenderer>> = Vec::new();
+        configs.extend(self.pending_window.take());
+        configs.extend(self.inner.pending_windows.drain(..));
+
+        for config in configs {
             let mut window = View::init(config, event_loop, &self.inner.proxy);
             let winit_window = Arc::clone(&window.window);
             let renderer = window.renderer.clone();
@@ -177,7 +190,8 @@ impl ApplicationHandler for DioxusNativeApplication {
             // And then request redraw
             window.request_redraw();
 
-            // todo(jon): we should actually mess with the pending windows instead of passing along the contexts
+            // Inserted directly: the inner drain below only resumes what is
+            // already in `windows` (pending is empty by now).
             self.inner.windows.insert(window_id, window);
         }
 
