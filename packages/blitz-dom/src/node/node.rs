@@ -129,6 +129,14 @@ pub struct Node {
 
     // Taffy layout data:
     pub style: Style<Atom>,
+    /// The stylo style that `style` was converted from. `flush_styles_to_layout`
+    /// skips the conversion while the primary style is still this same Arc: a
+    /// `ComputedValues` is never edited in place (a second reference here also
+    /// forces `Arc::make_mut` to clone), and the allocation cannot be freed and
+    /// reused while this reference pins it, so pointer equality proves `style`
+    /// is the conversion of exactly this content. Any code that edits `style`
+    /// by hand must reset this to `None`.
+    pub(crate) style_source: Option<ServoArc<ComputedValues>>,
     pub display_constructed_as: StyloDisplay,
     pub cache: Cache,
     pub unrounded_layout: Layout,
@@ -188,6 +196,7 @@ impl Node {
             after: None,
 
             style: Default::default(),
+            style_source: None,
             has_snapshot: false,
             snapshot_handled: AtomicBool::new(false),
             dirty_descendants: AtomicBool::new(true),

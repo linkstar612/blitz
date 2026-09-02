@@ -132,6 +132,9 @@ impl BaseDocument {
                         // if the input type is hidden, hide it
                         Some("hidden") => {
                             node.style.display = Display::None;
+                            // Hand-edited Taffy style: the next style flush must
+                            // rebuild it instead of trusting the recorded source.
+                            node.style_source = None;
                             return taffy::LayoutOutput::HIDDEN;
                         }
                         Some("checkbox") => {

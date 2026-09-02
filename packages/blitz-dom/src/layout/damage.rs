@@ -542,10 +542,21 @@ impl BaseDocument {
                 return;
             };
 
-            // if damage.intersects(RestyleDamage::RELAYOUT | CONSTRUCT_BOX) {
-            node.style = stylo_taffy::to_taffy_style(style);
-            node.display_constructed_as = style.clone_display();
-            // }
+            // Rebuild the Taffy style only when the primary style is a different
+            // Arc from the one `node.style` was converted from. A restyle always
+            // installs a new Arc and a ComputedValues is never edited in place,
+            // so pointer equality proves the conversion is still current. Keying
+            // on identity rather than on damage bits means a missed damage flag
+            // can never leave a stale Taffy style behind.
+            let style_is_current = node
+                .style_source
+                .as_ref()
+                .is_some_and(|source| std::ptr::eq(&**source, &**style));
+            if !style_is_current {
+                node.style = stylo_taffy::to_taffy_style(style);
+                node.display_constructed_as = style.clone_display();
+                node.style_source = Some(style.clone());
+            }
 
             // In non-incremental mode we unconditionally clear the Taffy cache.
             // In incremental mode this is handled as part of damage propagation.
@@ -694,5 +705,76 @@ fn node_to_paint_order(node: &Node, is_flex_or_grid: bool) -> (i32, i32) {
             position_to_order(position) + float_to_order(style.clone_float()),
             0,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{BaseDocument, DocumentConfig, ElementData, NodeData, qual_name};
+    use style::properties::ComputedValues;
+    use style::properties::style_structs::Font;
+    use style::servo_arc::Arc as ServoArc;
+    use taffy::style_helpers::length;
+
+    /// Installs a fresh initial-values style as the node's primary style and
+    /// returns a second handle to that same Arc.
+    fn install_primary_style(doc: &mut BaseDocument, node_id: usize) -> ServoArc<ComputedValues> {
+        let style =
+            ComputedValues::initial_values_with_font_override(Font::initial_values()).to_arc();
+        let mut data = doc.nodes[node_id].stylo_element_data.ensure_init_mut();
+        data.styles.primary = Some(style.clone());
+        style
+    }
+
+    fn element(doc: &mut BaseDocument) -> usize {
+        doc.create_node(NodeData::Element(ElementData::new(
+            qual_name!("div"),
+            vec![],
+        )))
+    }
+
+    #[test]
+    fn style_flush_skips_an_unchanged_primary_style() {
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let node_id = element(&mut doc);
+        let first = install_primary_style(&mut doc, node_id);
+
+        doc.flush_styles_to_layout(node_id);
+        let recorded = doc.nodes[node_id]
+            .style_source
+            .clone()
+            .expect("flush records the style it converted");
+        assert!(std::ptr::eq(&*recorded, &*first));
+
+        // A hand edit survives a flush while the primary style is the same Arc:
+        // that skip is the whole point of the guard.
+        doc.nodes[node_id].style.size.width = length(123.0);
+        doc.flush_styles_to_layout(node_id);
+        assert_eq!(doc.nodes[node_id].style.size.width, length(123.0));
+
+        // A new Arc, even with identical content, rebuilds the Taffy style and
+        // moves the record to the new allocation.
+        let second = install_primary_style(&mut doc, node_id);
+        doc.flush_styles_to_layout(node_id);
+        let node = &doc.nodes[node_id];
+        assert_ne!(node.style.size.width, length(123.0));
+        let recorded = node.style_source.as_ref().unwrap();
+        assert!(std::ptr::eq(&**recorded, &*second));
+        assert!(!std::ptr::eq(&**recorded, &*first));
+    }
+
+    #[test]
+    fn a_cleared_source_forces_a_rebuild() {
+        let mut doc = BaseDocument::new(DocumentConfig::default());
+        let node_id = element(&mut doc);
+        install_primary_style(&mut doc, node_id);
+        doc.flush_styles_to_layout(node_id);
+
+        let node = &mut doc.nodes[node_id];
+        node.style.size.width = length(123.0);
+        node.style_source = None;
+        doc.flush_styles_to_layout(node_id);
+        assert_ne!(doc.nodes[node_id].style.size.width, length(123.0));
+        assert!(doc.nodes[node_id].style_source.is_some());
     }
 }
