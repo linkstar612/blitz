@@ -1,10 +1,10 @@
 use blitz_traits::events::{
-    BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, PointerDetails,
+    BlitzImeEvent, BlitzKeyEvent, BlitzPointerId, KeyState, MouseEventButton, PointerDetails,
 };
 use blitz_traits::shell::ColorScheme;
 use keyboard_types::{Code, Key, Location, Modifiers};
 use winit::event::KeyEvent as WinitKeyEvent;
-use winit::event::{ButtonSource, ElementState};
+use winit::event::{ButtonSource, ElementState, MouseButton};
 use winit::event::{Ime, PointerKind, PointerSource};
 use winit::keyboard::Key as WinitKey;
 use winit::keyboard::KeyCode as WinitKeyCode;
@@ -84,6 +84,34 @@ pub(crate) fn pointer_kind_to_blitz(kind: &PointerKind) -> BlitzPointerId {
         // TODO: TabletTool and Unknown events
         PointerKind::TabletTool(_) => BlitzPointerId::Pen,
         PointerKind::Unknown => BlitzPointerId::Mouse,
+    }
+}
+
+/// Which mouse button a `ButtonSource` names, in DOM `MouseEvent.button` terms.
+///
+/// The side buttons are the reason this exists. They used to fall into a
+/// catch-all arm that answered `Auxiliary`, which is the middle button, so a
+/// press of Back was indistinguishable from a wheel click. Any consumer that
+/// acts on `Auxiliary` (middle-click autoscroll is the usual one) would fire on
+/// a side-button press. `MouseEventButton` has carried `Fourth` and `Fifth`
+/// since it was written, and `MouseEventButtons` has the matching bits, so
+/// nothing downstream needed a change.
+///
+/// Buttons 6 and up have no DOM number. They stay `Auxiliary` because that is
+/// what the browsers do with them, and because a new variant here would be a
+/// breaking change to `blitz-traits` for a button almost no mouse has.
+/// Non-mouse sources (pen, touch) report `Main`, unchanged.
+pub(crate) fn button_to_mouse_event_button(source: &ButtonSource) -> MouseEventButton {
+    match source {
+        ButtonSource::Mouse(mouse_button) => match mouse_button {
+            MouseButton::Left => MouseEventButton::Main,
+            MouseButton::Right => MouseEventButton::Secondary,
+            MouseButton::Middle => MouseEventButton::Auxiliary,
+            MouseButton::Back => MouseEventButton::Fourth,
+            MouseButton::Forward => MouseEventButton::Fifth,
+            _ => MouseEventButton::Auxiliary,
+        },
+        _ => MouseEventButton::Main,
     }
 }
 
@@ -693,5 +721,46 @@ pub(crate) fn winit_key_to_kbt_key(winit_key: &WinitKey) -> Key {
 
             _ => Key::Unidentified,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_side_buttons_are_not_the_middle_button() {
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Back)),
+            MouseEventButton::Fourth
+        );
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Forward)),
+            MouseEventButton::Fifth
+        );
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Middle)),
+            MouseEventButton::Auxiliary
+        );
+    }
+
+    #[test]
+    fn the_three_named_buttons_keep_their_dom_numbers() {
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Left)),
+            MouseEventButton::Main
+        );
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Right)),
+            MouseEventButton::Secondary
+        );
+    }
+
+    #[test]
+    fn a_sixth_button_stays_auxiliary_rather_than_growing_the_enum() {
+        assert_eq!(
+            button_to_mouse_event_button(&ButtonSource::Mouse(MouseButton::Button6)),
+            MouseEventButton::Auxiliary
+        );
     }
 }
