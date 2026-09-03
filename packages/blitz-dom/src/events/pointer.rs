@@ -752,16 +752,36 @@ pub(crate) fn handle_click(
     }
 }
 
+/// Pixel scroll deltas for one wheel event, with the Shift rule applied.
+///
+/// Holding Shift turns a vertical wheel into a horizontal one. Every browser
+/// does it and nothing here did: `handle_wheel` read `event.delta` and never
+/// looked at `event.mods`, so a horizontal scroller could only be reached with
+/// a tilt wheel or a touchpad, neither of which most desktop mice have.
+///
+/// The swap only fires when the device sent no horizontal delta of its own. A
+/// tilt wheel and a precision touchpad both report a real `x`, and rotating
+/// that into itself while Shift happens to be down would double the movement
+/// and lose the vertical component.
+pub(crate) fn wheel_deltas(delta: BlitzWheelDelta, mods: Modifiers) -> (f64, f64) {
+    let (x, y) = match delta {
+        BlitzWheelDelta::Lines(x, y) => (x * 20.0, y * 20.0),
+        BlitzWheelDelta::Pixels(x, y) => (x, y),
+    };
+    if mods.contains(Modifiers::SHIFT) && x == 0.0 {
+        (y, 0.0)
+    } else {
+        (x, y)
+    }
+}
+
 pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     doc: &mut BaseDocument,
     _: usize,
     event: BlitzWheelEvent,
     mut dispatch_event: F,
 ) {
-    let (scroll_x, scroll_y) = match event.delta {
-        BlitzWheelDelta::Lines(x, y) => (x * 20.0, y * 20.0),
-        BlitzWheelDelta::Pixels(x, y) => (x, y),
-    };
+    let (scroll_x, scroll_y) = wheel_deltas(event.delta, event.mods);
 
     let has_changed = doc.scroll_by(
         doc.get_hover_node_id(),
@@ -771,5 +791,44 @@ pub(crate) fn handle_wheel<F: FnMut(DomEvent)>(
     );
     if has_changed {
         doc.shell_provider.request_redraw();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wheel_deltas;
+    use blitz_traits::events::BlitzWheelDelta;
+    use keyboard_types::Modifiers;
+
+    #[test]
+    fn shift_turns_a_vertical_wheel_horizontal() {
+        assert_eq!(
+            wheel_deltas(BlitzWheelDelta::Pixels(0.0, 40.0), Modifiers::SHIFT),
+            (40.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn without_shift_the_axes_are_untouched() {
+        assert_eq!(
+            wheel_deltas(BlitzWheelDelta::Pixels(0.0, 40.0), Modifiers::empty()),
+            (0.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn a_tilt_wheel_is_not_rotated_into_itself() {
+        assert_eq!(
+            wheel_deltas(BlitzWheelDelta::Pixels(-12.0, 40.0), Modifiers::SHIFT),
+            (-12.0, 40.0)
+        );
+    }
+
+    #[test]
+    fn line_deltas_scale_before_the_swap() {
+        assert_eq!(
+            wheel_deltas(BlitzWheelDelta::Lines(0.0, 3.0), Modifiers::SHIFT),
+            (60.0, 0.0)
+        );
     }
 }
