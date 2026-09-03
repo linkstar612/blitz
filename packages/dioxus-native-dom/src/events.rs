@@ -158,6 +158,20 @@ impl NodeHandle {
         self.doc.borrow_mut()
     }
 
+    /// Returns `None` if the document is currently borrowed, mutably or not.
+    ///
+    /// The mutable counterpart of [`try_doc`](Self::try_doc), and it exists for
+    /// the same reason: blitz holds the document borrowed for the whole of an
+    /// event dispatch, so a background task that wants to MUTATE the document
+    /// (scrolling a node is the usual case, since `scroll`/`scroll_to` on this
+    /// handle are `NotSupported` stubs) has no non-panicking route. `doc_mut`
+    /// panics on a losing race and `try_doc` cannot scroll.
+    ///
+    /// A miss means "try again on the next tick", not "failed".
+    pub fn try_doc_mut(&self) -> Option<RefMut<'_, BaseDocument>> {
+        self.doc.try_borrow_mut().ok()
+    }
+
     pub fn node(&self) -> Ref<'_, Node> {
         Ref::map(self.doc.borrow(), |doc| {
             doc.get_node(self.node_id)
