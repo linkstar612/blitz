@@ -17,6 +17,14 @@ prelude = ["dep:dioxus-core-macro", "dep:dioxus-hooks", "dep:dioxus-signals", "d
 svg = ["blitz-dom/svg", "blitz-paint/svg"]
 floats = ["blitz-dom/floats"]
 incremental = ["blitz-dom/incremental"]
+# Build the deferred inline-layout tasks on a rayon pool instead of one at
+# a time on the caller thread. blitz-dom has implemented this since
+# resolve.rs `resolve_deferred_tasks`, but no consumer could reach it: the
+# feature had no forwarding entry here, so every dioxus-native app shaped
+# its text serially and took `font_ctx.lock()` once per task. Off by
+# default, same as blitz-dom, because each rayon thread clones the
+# FontContext on first use.
+parallel-construct = ["blitz-dom/parallel-construct"]
 autofocus = ["blitz-dom/autofocus"]
 system-fonts = ["blitz-dom/system-fonts"]
 # complex-scripts: enable dictionary-based line-breaking
