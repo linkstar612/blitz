@@ -99,6 +99,23 @@ pub struct View<Rend: WindowRenderer> {
     pub is_visible: bool,
     pub safe_area_insets: PhysicalInsets<u32>,
 
+    /// The embedder asked for a visible window and it has not been shown yet.
+    /// The window is created hidden and revealed by `reveal_after_frame` once
+    /// a frame painted with no critical resource pending is on its surface, so
+    /// the first thing on screen is the laid-out document: never the OS window
+    /// background, never a configured-but-unpresented swapchain.
+    reveal_pending: bool,
+    /// The document has reported a change from `poll` at least once. Before
+    /// that a dioxus document is an empty `<html>`: `complete_resume` paints
+    /// it, and revealing on that frame shows a black window for as long as
+    /// the first real render takes (measured at about 500 ms).
+    doc_polled: bool,
+    /// The viewport size changed since the renderer's surface was last sized.
+    /// `set_size` reconfigures the swapchain and a reconfigured swapchain shows
+    /// nothing until the next present, so it is applied right before `render`
+    /// instead of inside the resize event that produced it.
+    surface_size_dirty: bool,
+
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
     #[cfg(target_arch = "wasm32")]
@@ -127,9 +144,11 @@ impl<Rend: WindowRenderer> View<Rend> {
         event_loop: &dyn ActiveEventLoop,
         proxy: &BlitzShellProxy,
     ) -> Self {
-        // We create window as invisble and then later make window visible
-        // after AccessKit has initialised to avoid AccessKit panics
-        let is_visible = config.attributes.visible;
+        // The window is created invisible. It used to be shown right after
+        // AccessKit initialized (a hidden window avoids AccessKit panics); it
+        // now stays hidden until the first frame has been painted, which is
+        // later still, so that ordering is kept. See `reveal_after_frame`.
+        let reveal_pending = config.attributes.visible;
         // Capture the requested surface size before consuming `attributes`, so we can
         // seed the viewport on platforms (winit-web) that report `surface_size() == 0×0`
         // until a layout pass fires.
@@ -139,10 +158,6 @@ impl<Rend: WindowRenderer> View<Rend> {
         let winit_window: Arc<dyn Window> = Arc::from(event_loop.create_window(attrs).unwrap());
         #[cfg(feature = "accessibility")]
         let accessibility = AccessibilityState::new(&*winit_window, proxy.clone());
-
-        if is_visible {
-            winit_window.set_visible(true);
-        }
 
         // Create viewport
         // TODO: account for the "safe area"
@@ -210,7 +225,13 @@ impl<Rend: WindowRenderer> View<Rend> {
             #[cfg(target_arch = "wasm32")]
             resize_timer_scheduled: false,
             pointer_pos: Default::default(),
-            is_visible: winit_window.is_visible().unwrap_or(true),
+            // A window awaiting its reveal paints while hidden: that first
+            // frame is what the reveal waits for. Windows never reports
+            // `Occluded`, so nothing else would ever flip this to true.
+            is_visible: reveal_pending || winit_window.is_visible().unwrap_or(true),
+            reveal_pending,
+            doc_polled: false,
+            surface_size_dirty: false,
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -319,6 +340,8 @@ impl<Rend: WindowRenderer> View<Rend> {
         inner.can_create_surfaces(&self.renderer as _);
 
         self.renderer.set_size(width, height);
+        self.surface_size_dirty = false;
+        let is_blocked = inner.has_pending_critical_resources();
 
         self.renderer.render(|scene| {
             paint_scene(
@@ -331,9 +354,29 @@ impl<Rend: WindowRenderer> View<Rend> {
                 insets.top,
             )
         });
+        drop(inner);
 
         self.waker = Some(create_waker(&self.proxy, window_id));
+        // A frame painted with a stylesheet or font still loading is not the
+        // document; leave the reveal to the first unblocked `redraw`.
+        if !is_blocked {
+            self.reveal_after_frame();
+        }
         true
+    }
+
+    /// Show a window that was created hidden, now that a frame is on its
+    /// surface. The renderer waits for the GPU before returning from `render`,
+    /// so the swapchain already holds that frame when the window appears.
+    /// A no-op once the window has been shown, and a wait while the document
+    /// has not been polled yet (that frame is an empty document).
+    fn reveal_after_frame(&mut self) {
+        if !self.reveal_pending || !self.doc_polled {
+            return;
+        }
+        self.reveal_pending = false;
+        self.window.set_visible(true);
+        self.is_visible = true;
     }
 
     pub fn suspend(&mut self) {
@@ -348,6 +391,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         if let Some(waker) = &self.waker {
             let cx = std::task::Context::from_waker(waker);
             if self.doc.poll(Some(cx)) {
+                self.doc_polled = true;
                 #[cfg(feature = "accessibility")]
                 {
                     let inner = self.doc.inner();
@@ -356,7 +400,15 @@ impl<Rend: WindowRenderer> View<Rend> {
                     }
                 }
 
-                self.request_redraw();
+                if self.reveal_pending {
+                    // A hidden window gets no WM_PAINT on Windows, so a
+                    // requested redraw would never arrive. Paint now: this is
+                    // the first frame with the document in it, and the
+                    // reveal happens off it.
+                    self.redraw();
+                } else {
+                    self.request_redraw();
+                }
                 return true;
             }
         }
@@ -392,8 +444,19 @@ impl<Rend: WindowRenderer> View<Rend> {
         let is_animating = inner.is_animating();
         let is_blocked = inner.has_pending_critical_resources();
         let insets = self.safe_area_insets.to_logical(scale);
+        let painted = !is_blocked && is_visible && self.renderer.is_active();
 
         if !is_blocked && is_visible {
+            // The document is laid out at the new size by now (`resolve`
+            // above), so the surface can take that size and be painted in
+            // one go: no blank frame between the two. Field access, not a
+            // helper: `inner` still borrows `self.doc` here.
+            if self.surface_size_dirty {
+                self.surface_size_dirty = false;
+                let sa = self.safe_area_insets;
+                self.renderer
+                    .set_size(width + sa.left + sa.right, height + sa.top + sa.bottom);
+            }
             self.renderer.render(|scene| {
                 paint_scene(
                     scene,
@@ -408,6 +471,10 @@ impl<Rend: WindowRenderer> View<Rend> {
         }
 
         drop(inner);
+
+        if painted {
+            self.reveal_after_frame();
+        }
 
         if !is_blocked && is_visible && is_animating {
             self.request_redraw();
@@ -484,11 +551,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         drop(viewport);
         drop(inner);
         if width > 0 && height > 0 {
-            let insets = self.safe_area_insets;
-            self.renderer.set_size(
-                width + insets.left + insets.right,
-                height + insets.top + insets.bottom,
-            );
+            // Not `renderer.set_size` here: that reconfigures the swapchain,
+            // and between the reconfigure and the next present the window
+            // shows nothing (black on DXGI flip model). `redraw` applies the
+            // size right before it renders, so the surface is never resized
+            // without a frame following it in the same call.
+            self.surface_size_dirty = true;
             self.request_redraw();
         }
     }
@@ -598,7 +666,11 @@ impl<Rend: WindowRenderer> View<Rend> {
                     let width = physical_size.width - insets.left - insets.right;
                     let height = physical_size.height - insets.top - insets.bottom;
                     self.with_viewport(|v| v.window_size = (width, height));
-                    self.request_redraw();
+                    // Relayout and present inside the resize event, not on a
+                    // later RedrawRequested: the compositor shows the window at
+                    // its new size as soon as this handler returns, and the
+                    // frame it shows should be the one laid out for that size.
+                    self.redraw();
                 }
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
