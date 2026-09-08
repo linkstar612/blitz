@@ -1468,10 +1468,12 @@ impl Node {
                     let pos = hoisted_child.position(self.tree(), self.id);
                     let x = x - pos.x;
                     let y = y - pos.y;
-                    if let Some(hit) = self
-                        .with(hoisted_child.node_id)
-                        .hit_inner(x, y, scale, scrollbar)
-                    {
+                    // Same staleness as the `paint_children` walk:
+                    // `stacking_context` is rebuilt by the same pass.
+                    let Some(child) = self.tree().get(hoisted_child.node_id) else {
+                        continue;
+                    };
+                    if let Some(hit) = child.hit_inner(x, y, scale, scrollbar) {
                         return Some(hit);
                     }
                 }
@@ -1480,7 +1482,15 @@ impl Node {
 
         // Call `.hit()` on each child in turn. If any return `Some` then return that value. Else return `Some(self.id).
         for child_id in self.paint_children.borrow().iter().flatten().rev() {
-            let child = self.with(*child_id);
+            // `paint_children` is rebuilt by the damage-gated paint pass, so a
+            // subtree removed without damaging this node leaves ids behind
+            // that the tree no longer holds. `with` unwraps, which aborted the
+            // whole process on the next pointer event over the stale box. A
+            // hit test that misses a node already gone is correct behavior,
+            // so skip it.
+            let Some(child) = self.tree().get(*child_id) else {
+                continue;
+            };
             let child_position = child.taffy_position();
             let mut child_x = x;
             let mut child_y = y;
@@ -1515,10 +1525,12 @@ impl Node {
                     let pos = hoisted_child.position(self.tree(), self.id);
                     let x = x - pos.x;
                     let y = y - pos.y;
-                    if let Some(hit) = self
-                        .with(hoisted_child.node_id)
-                        .hit_inner(x, y, scale, scrollbar)
-                    {
+                    // Same staleness as the `paint_children` walk:
+                    // `stacking_context` is rebuilt by the same pass.
+                    let Some(child) = self.tree().get(hoisted_child.node_id) else {
+                        continue;
+                    };
+                    if let Some(hit) = child.hit_inner(x, y, scale, scrollbar) {
                         return Some(hit);
                     }
                 }
