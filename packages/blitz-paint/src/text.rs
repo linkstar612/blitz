@@ -84,8 +84,12 @@ pub(crate) fn draw_inline_backgrounds<'a>(
 /// re-opens the sweep without a rebuild of the tree.
 const STEM_DARKEN_ENABLED: bool = cfg!(target_os = "windows");
 
-/// Default expansion per side, device pixels.
-const STEM_DARKEN_DEFAULT_PX: f64 = 0.25;
+/// Default expansion per side, device pixels. Picked from a seven-value sweep
+/// on the R-OCZ.9 overlay line (0.15 to 0.35): 0.20 is the largest amount whose
+/// mean stem-core ink stays inside the acceptance cap of 0.05 over the WebView2
+/// reference, at 0.813 against 0.771. It lifts the 2 px stem share from 0.132
+/// to 0.459 at zoom 1.0 and to 0.615 at zoom 1.25, past the reference's 0.561.
+const STEM_DARKEN_DEFAULT_PX: f64 = 0.20;
 
 /// The vertical share of the horizontal amount, matching the ratio the macOS
 /// embolden path already uses (0.0121 / 0.015125).
