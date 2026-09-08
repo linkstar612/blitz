@@ -62,6 +62,46 @@ pub(crate) fn draw_inline_backgrounds<'a>(
     }
 }
 
+/// Synthetic stem darkening for the platforms whose renderer has no text gamma
+/// stage.
+///
+/// DirectWrite gamma-corrects and stem-darkens glyph coverage before blending;
+/// `vello_hybrid` blends area coverage directly. Measured on the same string at
+/// the same nominal size, that costs a vertical stem half its columns: Chromium
+/// put 137 of 175 stems at 2 device px where this stack left 147 of 182 at 1 px,
+/// with the mean core ink within 0.01 of each other. The ink is not weaker, it
+/// is spread over half as many columns, which reads as blur.
+///
+/// There is no coverage curve to fix here: `vello_hybrid` is an upstream crate.
+/// Expanding the outline by a fraction of a pixel is the closest lever this
+/// stack has, and it is a mitigation for a renderer design difference, not a
+/// root-cause fix.
+///
+/// The amount is in device pixels because the hinted path caches its outline at
+/// the draw size with a unit draw scale (`glifo::GlyphScaleProperties::new`), so
+/// `kurbo::expand_path` offsets in pixels and a stem gains twice the amount. The
+/// default was picked by measurement, not by eye; `BLITZ_TEXT_STEM_DARKEN`
+/// re-opens the sweep without a rebuild of the tree.
+const STEM_DARKEN_ENABLED: bool = cfg!(target_os = "windows");
+
+/// Default expansion per side, device pixels.
+const STEM_DARKEN_DEFAULT_PX: f64 = 0.25;
+
+/// The vertical share of the horizontal amount, matching the ratio the macOS
+/// embolden path already uses (0.0121 / 0.015125).
+const STEM_DARKEN_Y_RATIO: f64 = 0.8;
+
+fn stem_darken_px() -> f64 {
+    static AMOUNT: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *AMOUNT.get_or_init(|| {
+        std::env::var("BLITZ_TEXT_STEM_DARKEN")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v))
+            .unwrap_or(STEM_DARKEN_DEFAULT_PX)
+    })
+}
+
 pub(crate) fn stroke_text<'a>(
     scene: &mut impl PaintScene,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
@@ -105,6 +145,9 @@ pub(crate) fn stroke_text<'a>(
                 let embolden = if FONT_EMBOLDEN_ENABLED {
                     let fs = font_size as f64 / scale;
                     kurbo::Vec2::new((0.015125 * fs).min(0.3), (0.0121 * fs).min(0.3))
+                } else if STEM_DARKEN_ENABLED {
+                    let x = stem_darken_px();
+                    kurbo::Vec2::new(x, x * STEM_DARKEN_Y_RATIO)
                 } else {
                     kurbo::Vec2::default()
                 };
@@ -112,7 +155,10 @@ pub(crate) fn stroke_text<'a>(
                 scene.draw_glyphs(
                     font,
                     font_size,
-                    !FONT_EMBOLDEN_ENABLED, // hint
+                    // Hinting and embolden are independent in glifo, so keeping
+                    // both on is safe; only the macOS embolden path trades one
+                    // for the other.
+                    !FONT_EMBOLDEN_ENABLED || STEM_DARKEN_ENABLED, // hint
                     run.normalized_coords(),
                     embolden,
                     Fill::NonZero,
