@@ -1664,7 +1664,17 @@ impl BaseDocument {
     }
 
     pub fn get_cursor(&self) -> Option<CursorIcon> {
-        let node = &self.nodes[self.get_hover_node_id()?];
+        // A hit-test MISS is not `cursor: none`. `BlitzShellProvider::set_cursor`
+        // reads `None` as "hide the pointer" (blitz-shell/src/lib.rs), so
+        // answering `None` here made the cursor vanish whenever the hit test
+        // found nothing under it. A browser never does that: outside any
+        // content the pointer is still the default arrow. The miss is reachable
+        // since `hit_inner` began skipping ids the slab no longer holds instead
+        // of panicking, which is what a re-keyed list produces mid-reorder.
+        let Some(hover_id) = self.get_hover_node_id() else {
+            return Some(CursorIcon::Default);
+        };
+        let node = &self.nodes[hover_id];
 
         if let Some(subdoc) = node.subdoc().map(|doc| doc.inner()) {
             return subdoc.get_cursor();

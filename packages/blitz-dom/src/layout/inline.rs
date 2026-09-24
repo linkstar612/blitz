@@ -663,6 +663,22 @@ impl BaseDocument {
         }
         .maybe_max(container_pb.sum_axes().map(Some));
 
+        // A measure must not leave the PAINTED lines broken at the width it
+        // measured with. `inline_layout.layout` is the object blitz-paint draws
+        // from, and taffy runs intrinsic-sizing rounds after the real layout,
+        // so the last of them decided what the user saw: a row laid out 512px
+        // wide over two lines was repainted as one 885px line once something
+        // asked for its max-content height, and the tail ran under the control
+        // beside it and out past the card. Taffy's own answer stays the
+        // measured one; only the line breaks go back.
+        if inputs.run_mode == RunMode::PerformLayout {
+            inline_layout.laid_out_width = Some(width);
+        } else if let Some(painted) = inline_layout.laid_out_width {
+            if (painted - width).abs() > f32::EPSILON {
+                inline_layout.layout.break_all_lines(Some(painted));
+            }
+        }
+
         // Store sizes and positions of inline boxes
         for line in inline_layout.layout.lines() {
             for item in line.items() {

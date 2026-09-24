@@ -25,6 +25,17 @@ pub struct TextLayout {
     pub text: String,
     pub content_widths: Option<ContentWidths>,
     pub layout: parley::layout::Layout<TextBrush>,
+    /// The `max_advance` the last PERFORM-LAYOUT pass broke `layout` into lines
+    /// at, in device pixels.
+    ///
+    /// `layout` is the same object the painter draws from, and an intrinsic
+    /// sizing round re-breaks it to answer "how tall at max-content?". Without
+    /// this the last measure of the frame wins the paint: a box laid out 512px
+    /// wide over two lines, then measured at its 885px max-content, is painted
+    /// as one 885px line inside a 512px box, which overflows the row and runs
+    /// under whatever control sits beside it. Recording the real width lets a
+    /// measure put the lines back when it is done.
+    pub laid_out_width: Option<f32>,
 }
 
 impl TextLayout {
