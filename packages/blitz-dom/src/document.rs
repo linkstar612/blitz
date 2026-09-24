@@ -2162,10 +2162,20 @@ impl BaseDocument {
         // a pseudo-element or resolved on an anonymous box, and text hits carry
         // is_text via the hit node. Fall back to the canonical hover node if
         // the hit node has been removed (it is transient across resolves).
-        let node_id = self
+        //
+        // A hit-test MISS is not `cursor: none` (polyvox R-OVP.17).
+        // `BlitzShellProvider::set_cursor` reads `None` as "hide the pointer",
+        // so answering `None` here made the cursor vanish whenever the hit test
+        // found nothing under it, as a re-keyed list does mid-reorder. A
+        // browser never does that: outside any content the pointer is still
+        // the default arrow.
+        let Some(node_id) = self
             .hover_hit_node_id
             .filter(|&id| self.nodes.contains_key(id))
-            .or(self.get_hover_node_id())?;
+            .or(self.get_hover_node_id())
+        else {
+            return Some(CursorIcon::Default);
+        };
         let node = &self.nodes[node_id];
 
         if let Some(subdoc) = node.subdoc().map(|doc| doc.inner()) {

@@ -909,6 +909,31 @@ impl LayoutPassState<'_> {
         let line_box_top = container_pb.top + block_offset;
 
         // Store sizes and positions of inline boxes
+
+        // A measure must not leave the PAINTED lines broken at the width it
+        // measured with (polyvox R-OVP.17). `inline_layout.layout` is the
+        // object blitz-paint draws from, and taffy runs intrinsic-sizing rounds
+        // after the real layout, so the last of them decided what the user saw:
+        // a row laid out 512px wide over two lines was repainted as one 885px
+        // line once something asked for its max-content height. Taffy's own
+        // answer stays the measured one; only the line breaks (and their
+        // alignment, which a re-break resets) go back.
+        if inputs.run_mode == RunMode::PerformLayout {
+            inline_layout.laid_out_width = Some(width);
+        } else if let Some(painted) = inline_layout.laid_out_width {
+            if (painted - width).abs() > f32::EPSILON {
+                inline_layout.layout.break_all_lines(Some(painted));
+                inline_layout.layout.align(
+                    alignment,
+                    AlignmentOptions {
+                        align_when_overflowing: false,
+                        last_line_alignment,
+                    },
+                );
+            }
+        }
+
+        // Store sizes and positions of inline boxes
         let mut ibox_order: u32 = 0;
         let mut span_cb_flags = StyleFlags::empty();
         for line in inline_layout.layout.lines() {
