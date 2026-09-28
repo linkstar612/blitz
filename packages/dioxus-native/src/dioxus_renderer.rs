@@ -3,6 +3,8 @@ use std::sync::Arc;
 use std::{any::Any, cell::RefCell};
 
 use anyrender::{RenderContext, WindowRenderer};
+#[cfg(any(feature = "vello-hybrid", feature = "vello"))]
+use peniko::Color;
 
 // Renderer imports
 cfg_if::cfg_if! {
@@ -38,18 +40,29 @@ impl Default for DioxusNativeWindowRenderer {
 
 impl DioxusNativeWindowRenderer {
     pub fn new() -> Self {
-        let vello_renderer = InnerRenderer::new();
-        Self::with_inner_renderer(vello_renderer)
+        #[cfg(any(feature = "vello-hybrid", feature = "vello"))]
+        return Self::with_features_and_limits(None, None);
+        #[cfg(not(any(feature = "vello-hybrid", feature = "vello")))]
+        Self::with_inner_renderer(InnerRenderer::new())
     }
 
     #[cfg(any(feature = "vello-hybrid", feature = "vello"))]
     pub fn with_features_and_limits(features: Option<Features>, limits: Option<Limits>) -> Self {
-        let vello_renderer = InnerRenderer::with_options(InnerRendererOptions {
-            features,
-            limits,
-            ..Default::default()
-        });
-        Self::with_inner_renderer(vello_renderer)
+        // POLYVOX (R-OHA.21): the options struct is `#[non_exhaustive]` from
+        // anyrender_vello 0.13 and anyrender_vello_hybrid 0.9 on, so it is built
+        // through the builder. Those releases also paint `base_color` under
+        // every frame and default it to WHITE, where the releases before painted
+        // nothing and the surface cleared to transparent. A transparent window
+        // would turn white, so the base is pinned to TRANSPARENT, which skips
+        // the fill and keeps the old output.
+        let mut options = InnerRendererOptions::default().base_color(Color::TRANSPARENT);
+        if let Some(features) = features {
+            options = options.features(features);
+        }
+        if let Some(limits) = limits {
+            options = options.limits(limits);
+        }
+        Self::with_inner_renderer(InnerRenderer::with_options(options))
     }
 
     fn with_inner_renderer(vello_renderer: InnerRenderer) -> Self {
