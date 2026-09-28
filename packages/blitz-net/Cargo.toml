@@ -23,7 +23,10 @@ blitz-traits = { workspace = true }
 
 # Networking dependencies
 tokio = { workspace = true, features = ["sync", "time"] }
-reqwest = { workspace = true, features = ["charset", "native-tls", "form"] }
+# polyvox R-OHA.17: rustls with the platform verifier (the OS trust store), no
+# built-in crypto provider: the embedding app installs ring before any client
+# is built, so blitz-net shares the one TLS stack the app uses.
+reqwest = { workspace = true, features = ["charset", "rustls-no-provider", "form"] }
 data-url = { workspace = true }
 
 # Caching
