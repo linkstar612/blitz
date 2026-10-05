@@ -217,14 +217,20 @@ impl DioxusNativeApplication {
                     // a runtime window has no such pass, so resume it here or it
                     // never gets a surface and never paints.
                     if let Some(window) = self.inner.windows.get_mut(&window_id) {
+                        // `init_window` ran `initial_build`, so the document is
+                        // already rendered: the frame `complete_resume` paints
+                        // (on the `ResumeReady` that `resume` sends) reveals the
+                        // window. A runtime window gets no winit events while
+                        // hidden and its first poll may find no dirty scope, so
+                        // waiting for a poll left it hidden for good.
+                        window.mark_document_built();
                         window.resume();
                     }
-                    // A window is created hidden and revealed off its first
-                    // polled frame (`View::poll`). A boot window is polled after
-                    // the winit events of its creation; a hidden runtime window
-                    // gets none, so it would stay hidden forever. Queued after
-                    // the `ResumeReady` that `resume` just sent, so the waker
-                    // exists by the time this poll runs.
+                    // One poll once the waker exists (queued after the
+                    // `ResumeReady` that `resume` just sent): effects queued by
+                    // the first build run only when the document is polled, and
+                    // a window the pointer is not over gets no winit event to
+                    // trigger one.
                     self.inner
                         .proxy
                         .send_event(BlitzShellEvent::Poll { window_id });
