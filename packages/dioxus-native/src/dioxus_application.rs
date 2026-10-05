@@ -219,6 +219,15 @@ impl DioxusNativeApplication {
                     if let Some(window) = self.inner.windows.get_mut(&window_id) {
                         window.resume();
                     }
+                    // A window is created hidden and revealed off its first
+                    // polled frame (`View::poll`). A boot window is polled after
+                    // the winit events of its creation; a hidden runtime window
+                    // gets none, so it would stay hidden forever. Queued after
+                    // the `ResumeReady` that `resume` just sent, so the waker
+                    // exists by the time this poll runs.
+                    self.inner
+                        .proxy
+                        .send_event(BlitzShellEvent::Poll { window_id });
                 }
             }
 
