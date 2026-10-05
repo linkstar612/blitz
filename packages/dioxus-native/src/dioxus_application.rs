@@ -1,6 +1,7 @@
 use blitz_shell::{BlitzApplication, BlitzShellProxy, View};
 use dioxus_core::{ScopeId, provide_context};
 use dioxus_history::{History, MemoryHistory};
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 use winit::application::ApplicationHandler;
@@ -30,6 +31,59 @@ pub enum DioxusNativeEvent {
         attributes: Vec<(String, String)>,
         contents: Option<String>,
     },
+
+    /// polyvox-vrc R-OIM.3: create every window queued by [`open_window`].
+    /// A wake only: a `WindowConfig` owns a `VirtualDom`, which is not `Send`,
+    /// so the config itself waits in the UI-thread [`RUNTIME_WINDOWS`] queue.
+    CreateWindow,
+
+    /// polyvox-vrc R-OIM.3: drop one window. Unlike a close request from the
+    /// OS, this never exits the event loop, even when it removes the last
+    /// window, so a short-lived picker or flyout cannot end the app.
+    CloseWindow(WindowId),
+}
+
+thread_local! {
+    /// Configs handed to [`open_window`], drained on the next `CreateWindow`.
+    static RUNTIME_WINDOWS: RefCell<Vec<WindowConfig<DioxusNativeWindowRenderer>>> =
+        const { RefCell::new(Vec::new()) };
+    /// The event-loop proxy, stored by [`DioxusNativeApplication::new`] on the
+    /// UI thread so [`open_window`] and [`close_window`] can wake the loop
+    /// from any component or event handler without a context lookup.
+    static RUNTIME_PROXY: RefCell<Option<BlitzShellProxy>> = const { RefCell::new(None) };
+}
+
+/// Open a window at runtime (polyvox-vrc R-OIM.3).
+///
+/// Call on the UI thread (a component, an effect, an event handler). The
+/// window is created on the next turn of the event loop and gets the same
+/// contexts as a boot window (`use_window()`, `document::*`, history), so its
+/// root learns its own id with `use_window().id()`. Returns `false`, dropping
+/// the config, when called off the UI thread or before the application exists.
+pub fn open_window(config: WindowConfig<DioxusNativeWindowRenderer>) -> bool {
+    let Some(proxy) = RUNTIME_PROXY.with(|p| p.borrow().clone()) else {
+        return false;
+    };
+    RUNTIME_WINDOWS.with(|q| q.borrow_mut().push(config));
+    proxy.send_event(BlitzShellEvent::embedder_event(
+        DioxusNativeEvent::CreateWindow,
+    ));
+    true
+}
+
+/// Close a window opened at boot or by [`open_window`] (polyvox-vrc R-OIM.3).
+///
+/// The view is dropped on the next turn of the event loop; an unknown id is a
+/// no-op. Never exits the app, even for the last window. Returns `false` when
+/// called off the UI thread or before the application exists.
+pub fn close_window(window_id: WindowId) -> bool {
+    let Some(proxy) = RUNTIME_PROXY.with(|p| p.borrow().clone()) else {
+        return false;
+    };
+    proxy.send_event(BlitzShellEvent::embedder_event(
+        DioxusNativeEvent::CloseWindow(window_id),
+    ));
+    true
 }
 
 pub struct DioxusNativeApplication {
@@ -44,6 +98,7 @@ impl DioxusNativeApplication {
         event_queue: std::sync::mpsc::Receiver<BlitzShellEvent>,
         config: WindowConfig<DioxusNativeWindowRenderer>,
     ) -> Self {
+        RUNTIME_PROXY.with(|p| *p.borrow_mut() = Some(proxy.clone()));
         Self {
             pending_window: Some(config),
             inner: BlitzApplication::new(proxy, event_queue),
@@ -53,6 +108,59 @@ impl DioxusNativeApplication {
 
     pub fn add_window(&mut self, window_config: WindowConfig<DioxusNativeWindowRenderer>) {
         self.inner.add_window(window_config);
+    }
+
+    /// Build one window with the window-bound contexts every window gets, run
+    /// its first build and insert it into `windows`, NOT yet resumed. Shared by
+    /// the boot path and runtime `CreateWindow` (polyvox-vrc R-OIM.3).
+    fn init_window(
+        &mut self,
+        config: WindowConfig<DioxusNativeWindowRenderer>,
+        event_loop: &dyn ActiveEventLoop,
+    ) -> WindowId {
+        let mut window = View::init(config, event_loop, &self.inner.proxy);
+        let winit_window = Arc::clone(&window.window);
+        let renderer = window.renderer.clone();
+        let window_id = window.window_id();
+        let doc = window.downcast_doc_mut::<DioxusDocument>();
+
+        doc.vdom.in_scope(ScopeId::ROOT, || {
+            let shared: Rc<dyn dioxus_document::Document> = Rc::new(DioxusNativeDocument::new(
+                self.inner.proxy.clone(),
+                window_id,
+            ));
+            provide_context(shared);
+            provide_context(self.event_handlers.clone());
+        });
+
+        // Add shell provider
+        let shell_provider = doc.inner.borrow().shell_provider.clone();
+        doc.vdom
+            .in_scope(ScopeId::ROOT, move || provide_context(shell_provider));
+
+        // Add history
+        let history_provider: Rc<dyn History> = Rc::new(MemoryHistory::default());
+        doc.vdom
+            .in_scope(ScopeId::ROOT, move || provide_context(history_provider));
+
+        // Add renderer
+        doc.vdom
+            .in_scope(ScopeId::ROOT, move || provide_context(renderer));
+
+        // Add winit window
+        doc.vdom
+            .in_scope(ScopeId::ROOT, move || provide_context(winit_window));
+
+        // Queue rebuild
+        doc.initial_build();
+
+        // And then request redraw
+        window.request_redraw();
+
+        // Inserted directly: the boot drain only resumes what is already in
+        // `windows` (pending is empty by now); a runtime caller resumes it.
+        self.inner.windows.insert(window_id, window);
+        window_id
     }
 
     fn handle_dioxus_native_event(
@@ -98,6 +206,27 @@ impl DioxusNativeApplication {
                     doc.create_head_element(name, attributes, contents);
                     window.poll();
                 }
+            }
+
+            DioxusNativeEvent::CreateWindow => {
+                // Drain all of it: two opens before one wake share that wake.
+                let configs = RUNTIME_WINDOWS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+                for config in configs {
+                    let window_id = self.init_window(config, event_loop);
+                    // Boot resumes every view in `BlitzApplication::can_create_surfaces`;
+                    // a runtime window has no such pass, so resume it here or it
+                    // never gets a surface and never paints.
+                    if let Some(window) = self.inner.windows.get_mut(&window_id) {
+                        window.resume();
+                    }
+                }
+            }
+
+            DioxusNativeEvent::CloseWindow(window_id) => {
+                // Drop before anything else touches the loop, as blitz-shell's
+                // own close path does (winit#4135). No exit-when-empty check.
+                let window = self.inner.windows.remove(window_id);
+                drop(window);
             }
 
             // Suppress unused variable warning
@@ -151,48 +280,7 @@ impl ApplicationHandler for DioxusNativeApplication {
         configs.extend(self.inner.pending_windows.drain(..));
 
         for config in configs {
-            let mut window = View::init(config, event_loop, &self.inner.proxy);
-            let winit_window = Arc::clone(&window.window);
-            let renderer = window.renderer.clone();
-            let window_id = window.window_id();
-            let doc = window.downcast_doc_mut::<DioxusDocument>();
-
-            doc.vdom.in_scope(ScopeId::ROOT, || {
-                let shared: Rc<dyn dioxus_document::Document> = Rc::new(DioxusNativeDocument::new(
-                    self.inner.proxy.clone(),
-                    window_id,
-                ));
-                provide_context(shared);
-                provide_context(self.event_handlers.clone());
-            });
-
-            // Add shell provider
-            let shell_provider = doc.inner.borrow().shell_provider.clone();
-            doc.vdom
-                .in_scope(ScopeId::ROOT, move || provide_context(shell_provider));
-
-            // Add history
-            let history_provider: Rc<dyn History> = Rc::new(MemoryHistory::default());
-            doc.vdom
-                .in_scope(ScopeId::ROOT, move || provide_context(history_provider));
-
-            // Add renderer
-            doc.vdom
-                .in_scope(ScopeId::ROOT, move || provide_context(renderer));
-
-            // Add winit window
-            doc.vdom
-                .in_scope(ScopeId::ROOT, move || provide_context(winit_window));
-
-            // Queue rebuild
-            doc.initial_build();
-
-            // And then request redraw
-            window.request_redraw();
-
-            // Inserted directly: the inner drain below only resumes what is
-            // already in `windows` (pending is empty by now).
-            self.inner.windows.insert(window_id, window);
+            self.init_window(config, event_loop);
         }
 
         self.inner.can_create_surfaces(event_loop);

@@ -27,7 +27,9 @@ use blitz_traits::net::NetProvider;
 pub use dioxus_native_dom::*;
 
 use assets::DioxusNativeNetProvider;
-pub use dioxus_application::{DioxusNativeApplication, DioxusNativeEvent};
+pub use dioxus_application::{
+    DioxusNativeApplication, DioxusNativeEvent, close_window, open_window,
+};
 pub use dioxus_renderer::DioxusNativeWindowRenderer;
 
 #[cfg(target_os = "android")]
