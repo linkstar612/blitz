@@ -365,6 +365,30 @@ impl<Rend: WindowRenderer> View<Rend> {
         true
     }
 
+    /// Record that the document already holds its first render (polyvox-vrc
+    /// R-OIM.3). An embedder that built the document synchronously before
+    /// `resume` (dioxus-native's runtime `CreateWindow`) calls this so the
+    /// frame `complete_resume` paints can reveal the window. Without it the
+    /// reveal waits for a `poll` that finds work, and a document with no
+    /// dirty scope after its first build (effects run without marking one)
+    /// never reports any: the window stayed hidden forever.
+    pub fn mark_document_built(&mut self) {
+        self.doc_polled = true;
+    }
+
+    /// `request_redraw`, except that a window still awaiting its reveal is
+    /// painted now (polyvox-vrc R-OIM.3). A hidden window gets no WM_PAINT on
+    /// Windows, so a redraw requested for it never arrives; a frame first
+    /// blocked on a critical resource would then never be followed by the
+    /// unblocked one the reveal waits for.
+    pub fn request_redraw_or_paint(&mut self) {
+        if self.reveal_pending && self.renderer.is_active() {
+            self.redraw();
+        } else {
+            self.request_redraw();
+        }
+    }
+
     /// Show a window that was created hidden, now that a frame is on its
     /// surface. The renderer waits for the GPU before returning from `render`,
     /// so the swapchain already holds that frame when the window appears.

@@ -70,7 +70,10 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
             BlitzShellEvent::RequestRedraw { doc_id } => {
                 // TODO: Handle multiple documents per window
                 if let Some(window) = self.window_mut_by_doc_id(doc_id) {
-                    window.request_redraw();
+                    // A resource finishing while a window awaits its reveal
+                    // must paint now: a hidden window gets no WM_PAINT
+                    // (polyvox-vrc R-OIM.3).
+                    window.request_redraw_or_paint();
                 }
             }
 
