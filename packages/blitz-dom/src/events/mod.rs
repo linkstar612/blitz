@@ -5,7 +5,7 @@ mod keyboard;
 mod pointer;
 
 use crate::util::Point;
-use blitz_traits::events::{DomEvent, DomEventData, MouseEventButton, PointerCoords, UiEvent};
+use blitz_traits::events::{DomEvent, DomEventData, PointerCoords, UiEvent};
 pub use driver::{EventDriver, EventHandler, NoopEventHandler};
 use focus::generate_focus_events;
 pub(crate) use ime::handle_ime_event;
@@ -187,7 +187,7 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         // R-OIP.5: the transcript, whose selection a menu has to copy). The
         // widget has already seen the release and owns any drag it was in.
         if let DomEventData::PointerUp(up) = &event.data
-            && up.button == MouseEventButton::Secondary
+            && up.button == blitz_traits::events::MouseEventButton::Secondary
         {
             dispatch_event(DomEvent::new(
                 target_node_id,
