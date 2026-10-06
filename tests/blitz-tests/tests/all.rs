@@ -50,6 +50,7 @@ mod render_blocking_stylesheet;
 mod resize_restyle;
 mod rotate_z_axis;
 mod scroll_clamp;
+mod selection_buttons;
 mod scoped_query_selector;
 mod scrollbar_drag;
 mod scrollbars;
