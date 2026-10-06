@@ -164,8 +164,14 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
 
     let mut changed = doc.set_hover_to(x, y);
 
-    // Check if we've moved enough to be considered a selection drag (2px threshold)
-    if buttons != MouseEventButtons::None && doc.drag_mode == DragMode::None {
+    // Check if we've moved enough to be considered a selection drag (2px threshold).
+    // Only the primary button selects (polyvox R-OIP.5): Blink's
+    // `HandleMouseDraggedEvent` ignores any other. A right press that jiggled
+    // past the threshold used to arm `Selecting`, which re-anchored the
+    // selection it was meant to keep and, by leaving `drag_mode` set, also
+    // swallowed the `contextmenu` that `handle_pointerup` only sends for a
+    // clean press.
+    if buttons.contains(MouseEventButtons::Primary) && doc.drag_mode == DragMode::None {
         let dx = x - doc.mousedown_position.x;
         let dy = y - doc.mousedown_position.y;
         if dx.abs() > 2.0 || dy.abs() > 2.0 {
@@ -434,6 +440,15 @@ pub(crate) fn handle_pointerdown(
 
     match click_target {
         ClickTarget::Disabled => (),
+        // A press with any button but the primary one that lands inside the
+        // current selection leaves it alone, so the context menu a right-click
+        // opens still has the selection to copy. Outside one, a right press
+        // collapses it to the press point exactly as a left press does: Blink
+        // on Windows has no button test in `HandleSingleClick`, only the
+        // `Selection().Contains` early return (polyvox R-OIP.5, measured with
+        // `Input.dispatchMouseEvent` against Edge 141).
+        ClickTarget::SelectableText
+            if button != MouseEventButton::Main && doc.text_selection_contains_point(x, y) => {}
         ClickTarget::SelectableText => {
             // Handle text selection for non-input elements
             if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
@@ -458,12 +473,25 @@ pub(crate) fn handle_pointerdown(
             let node = &mut doc.nodes[actual_target];
             let el = node.data.downcast_element_mut().unwrap();
             if let SpecialElementData::TextInput(ref mut text_input_data) = el.special_data {
+                // Same rule inside a field: a non-primary press within the
+                // field's own selection keeps it (polyvox R-OIP.5). Inclusive
+                // at both ends, like `text_selection_contains_point`.
+                let editor = &text_input_data.editor;
+                let keep = button != MouseEventButton::Main
+                    && !editor.raw_selection().is_collapsed()
+                    && editor.try_layout().is_some_and(|layout| {
+                        let at = parley::Cursor::from_point(layout, tx as f32, ty as f32).index();
+                        let range = editor.raw_selection().text_range();
+                        range.start <= at && at <= range.end
+                    });
+
                 let mut font_ctx = doc.font_ctx.lock().unwrap();
                 let mut driver = text_input_data
                     .editor
                     .driver(&mut font_ctx, &mut doc.layout_ctx);
 
                 match click_count {
+                    _ if keep => {}
                     1 => {
                         if mods.shift() {
                             driver.shift_click_extension(tx as f32, ty as f32);
