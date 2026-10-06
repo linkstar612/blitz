@@ -28,20 +28,24 @@ pub(crate) fn handle_key_or_input_event<F: FnMut(DomEvent)>(
             let action_mod = event.modifiers.contains(ACTION_MOD);
             if action_mod {
                 if let Key::Character(c) = &event.key {
-                    if c.to_lowercase() == "c" {
-                        // Check if we have a text selection (and no focused text input)
-                        let has_focused_text_input = doc.focus_node_id.is_some_and(|id| {
-                            doc.get_node(id)
-                                .and_then(|n| n.element_data())
-                                .is_some_and(|e| e.text_input_data().is_some())
-                        });
-
-                        if !has_focused_text_input {
-                            if let Some(text) = doc.get_selected_text() {
-                                let _ = doc.shell_provider.set_clipboard_text(text);
-                                return;
-                            }
+                    // Check if we have a text selection (and no focused text input)
+                    let has_focused_text_input = doc.focus_node_id.is_some_and(|id| {
+                        doc.get_node(id)
+                            .and_then(|n| n.element_data())
+                            .is_some_and(|e| e.text_input_data().is_some())
+                    });
+                    if c.to_lowercase() == "c" && !has_focused_text_input {
+                        if let Some(text) = doc.get_selected_text() {
+                            let _ = doc.shell_provider.set_clipboard_text(text);
+                            return;
                         }
+                    }
+                    // Ctrl+A with no field focused selects the page, as the
+                    // browser's `selectAll` command does (polyvox R-OIP.5).
+                    // A focused field falls through to its editor's own arm.
+                    if c.to_lowercase() == "a" && !has_focused_text_input {
+                        doc.select_all_text();
+                        return;
                     }
                 }
             }
