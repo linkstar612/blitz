@@ -90,6 +90,8 @@ impl BaseDocument {
         self.resolve_layout();
         timer.record_time("layout");
 
+        self.clamp_scroll_offsets();
+
         self.resolve_transforms(root_node_id);
         timer.record_time("transform");
 
@@ -377,5 +379,29 @@ impl BaseDocument {
 
         // println!("\n\n");
         // taffy::print_tree(self, root_node_id)
+    }
+
+    /// Pull every scroll offset back inside its box's scroll range after
+    /// layout, as a browser does whenever scrollable overflow shrinks
+    /// (polyvox R-OIP.6). Only `scroll_node_by` clamped before, so a scroller
+    /// whose content got shorter (one settings section swapped for a shorter
+    /// one) kept an offset past its new end, painted its content out of view,
+    /// and stayed blank until the next wheel event clamped it.
+    ///
+    /// No `scroll` event is raised: resolve has no event sink, and the next
+    /// user scroll reports the clamped offset anyway.
+    pub(crate) fn clamp_scroll_offsets(&mut self) {
+        for (_, node) in self.nodes.iter_mut() {
+            if node.scroll_offset.x == 0.0 && node.scroll_offset.y == 0.0 {
+                continue;
+            }
+            let max_x = f64::from(node.final_layout.scroll_width()).max(0.0);
+            let max_y = f64::from(node.final_layout.scroll_height()).max(0.0);
+            node.scroll_offset.x = node.scroll_offset.x.clamp(0.0, max_x);
+            node.scroll_offset.y = node.scroll_offset.y.clamp(0.0, max_y);
+        }
+        // The viewport's own offset, against the root's overflow. A zero
+        // delta through the scroll API is exactly its clamp.
+        self.scroll_viewport_by_has_changed(0.0, 0.0);
     }
 }
