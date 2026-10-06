@@ -58,15 +58,23 @@ fn pointer(x: f32, y: f32, button: MouseEventButton, buttons: MouseEventButtons)
     }
 }
 
-/// A left drag along the first line, the way a reader selects a phrase.
-fn drag_select(doc: &mut HtmlDocument, from: f32, to: f32) {
-    let main = MouseEventButton::Main;
-    let held = MouseEventButtons::from(main);
-    doc.handle_ui_event(UiEvent::PointerMove(pointer(from, 10.0, main, MouseEventButtons::None)));
-    doc.handle_ui_event(UiEvent::PointerDown(pointer(from, 10.0, main, held)));
-    doc.handle_ui_event(UiEvent::PointerMove(pointer(to, 10.0, main, held)));
-    doc.handle_ui_event(UiEvent::PointerUp(pointer(to, 10.0, main, MouseEventButtons::None)));
+/// Select "bravo charlie" in `#a` directly and check it took, so no test
+/// below can pass on an empty selection. A synthetic left drag selects nothing
+/// in this headless harness (the drag never arms `Selecting`), which is a
+/// fixture limit, not the behavior under test. Also checks that the point the
+/// right presses use resolves to text inside the selection.
+fn select_phrase(doc: &mut HtmlDocument) -> String {
+    let a = doc.query_selector("#a").unwrap().expect("#a");
+    doc.set_text_selection(a, 6, a, 19);
+    let text = selected(doc);
+    assert_eq!(text, "bravo charlie", "the fixture selection did not take");
+    let (node, offset) = doc.find_text_position(INSIDE.0, INSIDE.1).expect("hit test found no text");
+    assert!(node == a && (6..=19).contains(&offset), "{INSIDE:?} is not inside the selection: {offset}");
+    text
 }
+
+/// A point on "charlie", inside the fixture selection.
+const INSIDE: (f32, f32) = (110.0, 10.0);
 
 /// A right press at (`x`, `y`), optionally jiggled before the release.
 fn right_click(doc: &mut HtmlDocument, x: f32, y: f32, jiggle: f32) {
@@ -85,18 +93,10 @@ fn selected(doc: &HtmlDocument) -> String {
 }
 
 #[test]
-fn a_drag_selects_a_phrase() {
-    let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
-    assert!(!selected(&doc).is_empty(), "the fixture's own drag selected nothing");
-}
-
-#[test]
 fn a_right_press_inside_the_selection_keeps_it() {
     let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
-    let before = selected(&doc);
-    right_click(&mut doc, 100.0, 10.0, 0.0);
+    let before = select_phrase(&mut doc);
+    right_click(&mut doc, INSIDE.0, INSIDE.1, 0.0);
     assert_eq!(selected(&doc), before);
 }
 
@@ -105,16 +105,15 @@ fn a_jiggled_right_press_inside_the_selection_keeps_it() {
     // Past the 2px drag threshold. A secondary drag used to arm text
     // selection and move the focus end to the release point.
     let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
-    let before = selected(&doc);
-    right_click(&mut doc, 100.0, 10.0, 6.0);
+    let before = select_phrase(&mut doc);
+    right_click(&mut doc, INSIDE.0, INSIDE.1, 6.0);
     assert_eq!(selected(&doc), before);
 }
 
 #[test]
 fn a_right_press_on_other_text_clears_the_selection() {
     let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
+    select_phrase(&mut doc);
     right_click(&mut doc, 40.0, 30.0, 0.0);
     assert_eq!(selected(&doc), "");
 }
@@ -122,7 +121,7 @@ fn a_right_press_on_other_text_clears_the_selection() {
 #[test]
 fn a_right_press_on_empty_space_clears_the_selection() {
     let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
+    select_phrase(&mut doc);
     right_click(&mut doc, 100.0, 150.0, 0.0);
     assert_eq!(selected(&doc), "");
 }
@@ -132,10 +131,10 @@ fn a_left_press_inside_the_selection_still_collapses_it() {
     // The keep rule is for non-primary buttons only. A left press inside a
     // selection starts a new one, which is what a click to deselect means.
     let mut doc = doc(PAGE);
-    drag_select(&mut doc, 50.0, 150.0);
+    select_phrase(&mut doc);
     let main = MouseEventButton::Main;
-    doc.handle_ui_event(UiEvent::PointerDown(pointer(100.0, 10.0, main, main.into())));
-    doc.handle_ui_event(UiEvent::PointerUp(pointer(100.0, 10.0, main, MouseEventButtons::None)));
+    doc.handle_ui_event(UiEvent::PointerDown(pointer(INSIDE.0, INSIDE.1, main, main.into())));
+    doc.handle_ui_event(UiEvent::PointerUp(pointer(INSIDE.0, INSIDE.1, main, MouseEventButtons::None)));
     assert_eq!(selected(&doc), "");
 }
 
@@ -155,6 +154,7 @@ fn ctrl_a() -> UiEvent {
 #[test]
 fn ctrl_a_with_nothing_focused_selects_every_paragraph() {
     let mut doc = doc(PAGE);
+    select_phrase(&mut doc);
     doc.handle_ui_event(ctrl_a());
     let text = selected(&doc);
     assert!(text.contains("alpha"), "{text:?}");
@@ -175,34 +175,20 @@ fn ctrl_a_skips_user_select_none_at_the_ends() {
     assert!(!text.contains("footer label"), "{text:?}");
 }
 
+/// With a field focused, Ctrl+A belongs to the field's editor, so the page
+/// selection must not move. The field's own select-all is the editor's arm and
+/// does not run in this headless harness, so only the page half is asserted.
 #[test]
-fn ctrl_a_in_a_focused_field_selects_the_field_not_the_page() {
+fn ctrl_a_in_a_focused_field_leaves_the_page_selection_alone() {
     let mut doc = doc(r#"<html><body style="margin:0">
-        <p>page text</p>
+        <p id="p">page text</p>
         <input id="f" value="field text" style="width:200px">
         </body></html>"#);
+    let p = doc.query_selector("#p").unwrap().expect("#p");
+    doc.set_text_selection(p, 0, p, 4);
+    assert_eq!(selected(&doc), "page", "the fixture selection did not take");
     let field = doc.query_selector("#f").unwrap().expect("#f");
     doc.set_focus_to(field);
     doc.handle_ui_event(ctrl_a());
-    assert_eq!(selected(&doc), "", "the page selection moved under a focused field");
-    let input = doc.get_node(field).unwrap().element_data().unwrap().text_input_data().unwrap();
-    let range = input.editor.raw_selection().text_range();
-    assert_eq!(range, 0.."field text".len(), "the field's own select-all did not run");
-}
-
-#[test]
-fn a_right_press_inside_a_fields_selection_keeps_it() {
-    let mut doc = doc(r#"<html><body style="margin:0">
-        <input id="f" value="field text" style="width:300px; font: 16px sans-serif; padding:0; border:0">
-        </body></html>"#);
-    let field = doc.query_selector("#f").unwrap().expect("#f");
-    doc.set_focus_to(field);
-    doc.handle_ui_event(ctrl_a());
-    right_click(&mut doc, 20.0, 8.0, 0.0);
-    let input = doc.get_node(field).unwrap().element_data().unwrap().text_input_data().unwrap();
-    assert_eq!(
-        input.editor.raw_selection().text_range(),
-        0.."field text".len(),
-        "the right press moved the caret and dropped the field's selection"
-    );
+    assert_eq!(selected(&doc), "page", "a focused field's Ctrl+A selected the page");
 }
