@@ -781,17 +781,24 @@ impl ElementCx<'_, '_> {
                 * Affine::translate((pos.x * self.scale - scroll_x, pos.y * self.scale - scroll_y));
 
             if self.node.is_focussed() {
-                // Render selection/caret
-                for (rect, _line_idx) in input_data.editor.selection_geometry().iter() {
-                    scene.fill(
-                        Fill::NonZero,
-                        transform,
-                        SELECTION_COLOR,
-                        None,
-                        &convert_rect(rect),
-                    );
+                // Render selection/caret, moved onto the snapped glyph runs
+                // (R-OIP.3) so the caret sits where the text is drawn.
+                let snaps = input_data.editor.try_layout().map(|layout| {
+                    crate::text::RunSnaps::new(layout, transform, &crate::text::dom_text_raster())
+                });
+                for (rect, line_idx) in input_data.editor.selection_geometry().iter() {
+                    let rect = convert_rect(rect);
+                    let rect = snaps
+                        .as_ref()
+                        .map_or(rect, |s| s.snap_rect(*line_idx, rect));
+                    scene.fill(Fill::NonZero, transform, SELECTION_COLOR, None, &rect);
                 }
                 if let Some(cursor) = input_data.editor.cursor_geometry(1.5) {
+                    let cursor = snaps.as_ref().map_or(cursor, |s| {
+                        let line = s.line_at((cursor.y0 + cursor.y1) / 2.0);
+                        let dx = s.dx_at(line, cursor.x0, false);
+                        parley::BoundingBox::new(cursor.x0 + dx, cursor.y0, cursor.x1 + dx, cursor.y1)
+                    });
                     let color = self.style.get_inherited_text().color;
                     let caret_color = match &self.style.get_inherited_ui().caret_color.0 {
                         ColorOrAuto::Auto => color,
