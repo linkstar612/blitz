@@ -2210,6 +2210,75 @@ impl BaseDocument {
         self.text_selection.is_active()
     }
 
+    /// Whether the point lands inside the current non-empty text selection.
+    ///
+    /// Blink asks the same question on every press (`SelectionController::
+    /// HandleSingleClick`, `Selection().Contains(point)`): a press inside a
+    /// selection does not restart it. That is what lets a right-click open a
+    /// context menu whose Copy still has something to copy (polyvox R-OIP.5).
+    /// Inclusive at both ends, so a press on the last selected glyph's trailing
+    /// edge still counts as inside.
+    pub fn text_selection_contains_point(&self, x: f32, y: f32) -> bool {
+        let Some((node, offset)) = self.find_text_position(x, y) else {
+            return false;
+        };
+        self.get_text_selection_ranges()
+            .into_iter()
+            .any(|(id, start, end)| id == node && start <= offset && offset <= end)
+    }
+
+    /// Select every piece of selectable text in the document, which is what
+    /// Ctrl+A does in a browser when no editable element has focus (polyvox
+    /// R-OIP.5). Inline roots under a `user-select: none` box are skipped as
+    /// endpoints, so the selection starts and ends on text a drag could have
+    /// selected. Returns whether there was any text to select.
+    pub fn select_all_text(&mut self) -> bool {
+        let roots = self.selectable_inline_roots();
+        let (Some(&first), Some(&last)) = (roots.first(), roots.last()) else {
+            return false;
+        };
+        let end = self
+            .get_node(last)
+            .and_then(|n| n.element_data())
+            .and_then(|e| e.inline_layout_data.as_ref())
+            .map_or(0, |l| l.text.len());
+        self.set_text_selection(first, 0, last, end);
+        self.shell_provider.request_redraw();
+        true
+    }
+
+    /// Every inline root holding text, in document order, skipping any under a
+    /// `user-select: none` ancestor. Iterative so a deep tree costs heap, not
+    /// the UI thread's stack.
+    fn selectable_inline_roots(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        let mut stack = vec![(self.root_element().id, false)];
+        while let Some((id, mut unselectable)) = stack.pop() {
+            let Some(node) = self.get_node(id) else {
+                continue;
+            };
+            if node
+                .primary_styles()
+                .is_some_and(|s| s.clone_user_select() == style::values::computed::UserSelect::None)
+            {
+                unselectable = true;
+            }
+            if !unselectable
+                && node.flags.is_inline_root()
+                && node
+                    .element_data()
+                    .and_then(|e| e.inline_layout_data.as_ref())
+                    .is_some_and(|l| !l.text.is_empty())
+            {
+                out.push(id);
+            }
+            for &child in node.children.iter().rev() {
+                stack.push((child, unselectable));
+            }
+        }
+        out
+    }
+
     /// Get the selected text content, supporting selection across multiple inline roots.
     pub fn get_selected_text(&self) -> Option<String> {
         let ranges = self.get_text_selection_ranges();

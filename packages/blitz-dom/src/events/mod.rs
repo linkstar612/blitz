@@ -5,7 +5,7 @@ mod keyboard;
 mod pointer;
 
 use crate::util::Point;
-use blitz_traits::events::{DomEvent, DomEventData, PointerCoords, UiEvent};
+use blitz_traits::events::{DomEvent, DomEventData, MouseEventButton, PointerCoords, UiEvent};
 pub use driver::{EventDriver, EventHandler, NoopEventHandler};
 use focus::generate_focus_events;
 pub(crate) use ime::handle_ime_event;
@@ -179,6 +179,20 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
                 },
                 &mut dispatch_event,
             );
+        }
+
+        // The `contextmenu` a secondary release raises everywhere else comes
+        // from `handle_pointerup`, which this arm never reaches, so a page
+        // could not answer a right-click over a custom widget at all (polyvox
+        // R-OIP.5: the transcript, whose selection a menu has to copy). The
+        // widget has already seen the release and owns any drag it was in.
+        if let DomEventData::PointerUp(up) = &event.data
+            && up.button == MouseEventButton::Secondary
+        {
+            dispatch_event(DomEvent::new(
+                target_node_id,
+                DomEventData::ContextMenu(up.clone()),
+            ));
         }
 
         return;
