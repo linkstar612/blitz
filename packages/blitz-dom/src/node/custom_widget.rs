@@ -71,6 +71,32 @@ impl anyrender::RenderContext for ProxyRenderContext<'_, '_> {
     }
 }
 
+/// Split a widget's device-pixel origin coordinate into the whole pixel its
+/// scene is placed at and the remainder the widget folds into its own drawing
+/// (polyvox R-OIP.1). `whole + fraction == origin`, `whole` is an integer and
+/// `fraction` is in `[-0.5, 0.5]`. A non-finite origin splits to `(origin, 0)`.
+pub fn split_device_origin(origin: f64) -> (f64, f64) {
+    if !origin.is_finite() {
+        return (origin, 0.0);
+    }
+    let whole = origin.round();
+    (whole, origin - whole)
+}
+
+/// The device-pixel translation blitz-paint draws a widget's scene at: the
+/// whole pixel nearest `actual - fraction`, where `actual` is the element's
+/// content-box origin as the paint traversal computed it and `fraction` is the
+/// remainder the widget was told before it painted. When the two agree this
+/// is exactly the `whole` of [`split_device_origin`]; when they do not (an
+/// ancestor CSS transform the prediction could not see) it is still a whole
+/// pixel, so the texture is never resampled and only the fold is off.
+pub fn snapped_widget_translation(actual: f64, fraction: f64) -> f64 {
+    if !actual.is_finite() || !fraction.is_finite() {
+        return actual;
+    }
+    (actual - fraction).round()
+}
+
 pub trait Widget {
     // DOM lifecycle
 
@@ -132,6 +158,19 @@ pub trait Widget {
     ) -> Scene {
         let _ = (render_ctx, styles, width, height, scale);
         Scene::new()
+    }
+
+    /// The sub-pixel part of this widget's device-pixel content-box origin,
+    /// told to the widget just before each `paint` (polyvox R-OIP.1).
+    ///
+    /// blitz-paint places the returned scene at a WHOLE device pixel, so a
+    /// texture the widget draws at `(0, 0)` lands texel for texel on the
+    /// screen and is never resampled. The element's real origin is that pixel
+    /// plus `(dx, dy)`, each in `[-0.5, 0.5]`: a widget that wants its content
+    /// exactly where layout put it adds this offset to its own drawing. The
+    /// default ignores it, which moves the content by at most half a pixel.
+    fn set_device_origin_fraction(&mut self, dx: f64, dy: f64) {
+        let _ = (dx, dy);
     }
 
     // TODO: allow for multiple nodes per widget

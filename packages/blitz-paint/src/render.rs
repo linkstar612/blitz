@@ -15,7 +15,7 @@ use crate::filters::convert_filters;
 use crate::kurbo_css::NonUniformRoundedRectRadii;
 use crate::layers::LayerManager;
 use crate::sizing::compute_object_fit;
-use crate::{CustomWidgetSceneMap, SELECTION_COLOR};
+use crate::{CustomWidgetPaint, CustomWidgetSceneMap, SELECTION_COLOR};
 use anyrender::{PaintScene, Scene};
 use blitz_dom::node::{
     ListItemLayout, ListItemLayoutPosition, Marker, NodeData, RasterImageData, TextInputData,
@@ -491,7 +491,7 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
         node: &'dom Node,
         layout: Layout,
         transform: Affine,
-        custom_widget_scene: Option<&'a Scene>,
+        custom_widget_scene: Option<&'a CustomWidgetPaint>,
     ) -> ElementCx<'dom, 'a> {
         let style = node
             .stylo_element_data
@@ -571,7 +571,7 @@ struct ElementCx<'dom, 'a> {
     list_item: Option<&'dom ListItemLayout>,
     devtools: &'dom DevtoolSettings,
     #[cfg_attr(not(feature = "custom-widget"), expect(unused))]
-    custom_widget_scene: Option<&'a Scene>,
+    custom_widget_scene: Option<&'a CustomWidgetPaint>,
 }
 
 /// Converts parley BoundingBox into peniko Rect
@@ -1007,13 +1007,30 @@ impl ElementCx<'_, '_> {
 
     #[cfg(feature = "custom-widget")]
     fn draw_custom_widget(&self, scene: &mut impl PaintScene) {
-        if let Some(widget_scene) = self.custom_widget_scene {
+        if let Some(widget) = self.custom_widget_scene {
             let x = self.frame.content_box.origin().x;
             let y = self.frame.content_box.origin().y;
-            let transform = self.transform.then_translate(Vec2 { x, y });
+            let mut transform = self.transform.then_translate(Vec2 { x, y });
+
+            // polyvox R-OIP.1: a translate-only placement lands on a whole
+            // device pixel. The content-box origin is a CSS offset times the
+            // window scale and so is routinely fractional, and a texture drawn
+            // at a fractional offset is resampled: bilinear smears every
+            // glyph, and nearest picks its column from a float that sits on
+            // the pixel boundary, so a column is dropped or doubled. The
+            // widget was told the remainder before it painted and has already
+            // drawn its content that far over, so nothing it draws moves.
+            let [a, b, c, d, tx, ty] = transform.as_coeffs();
+            if a == 1.0 && b == 0.0 && c == 0.0 && d == 1.0 {
+                use blitz_dom::node::snapped_widget_translation;
+                transform = Affine::translate(Vec2 {
+                    x: snapped_widget_translation(tx, widget.fraction.0),
+                    y: snapped_widget_translation(ty, widget.fraction.1),
+                });
+            }
 
             // TODO: eliminate clone
-            scene.append_scene(widget_scene.clone(), transform);
+            scene.append_scene(widget.scene.clone(), transform);
         }
     }
 
