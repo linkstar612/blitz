@@ -24,12 +24,25 @@ const PAGE: &str = r#"<html><body style="margin:0; font: 16px/20px sans-serif">
     <div style="height:200px"></div>
     </body></html>"#;
 
+/// A TrueType face to shape with, the way blitz-paint's text tests find one.
+fn test_font() -> Vec<u8> {
+    ["C:/Windows/Fonts/segoeui.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+        .iter()
+        .find_map(|p| std::fs::read(p).ok())
+        .expect("a system TrueType font to shape the fixture with")
+}
+
 fn doc(html: &str) -> HtmlDocument {
     let mut doc = HtmlDocument::from_html(
         html,
         DocumentConfig {
             viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
             html_parser_provider: Some(Arc::new(HtmlProvider) as _),
+            // This test build resolves no system fonts, so text would lay out
+            // with zero width and no point would hit-test to a text offset.
+            // One TrueType face, mapped to every generic family, fixes that (the
+            // bundled DejaVu woff2 does not decode here).
+            font_ctx: Some(blitz_dom::build_single_font_ctx(&test_font())),
             ..Default::default()
         },
     );
