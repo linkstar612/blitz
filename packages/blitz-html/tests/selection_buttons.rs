@@ -61,20 +61,31 @@ fn pointer(x: f32, y: f32, button: MouseEventButton, buttons: MouseEventButtons)
 /// Select "bravo charlie" in `#a` directly and check it took, so no test
 /// below can pass on an empty selection. A synthetic left drag selects nothing
 /// in this headless harness (the drag never arms `Selecting`), which is a
-/// fixture limit, not the behavior under test. Also checks that the point the
-/// right presses use resolves to text inside the selection.
-fn select_phrase(doc: &mut HtmlDocument) -> String {
+/// fixture limit, not the behavior under test. Returns the selected text and a
+/// point on the first line that hit-tests to an offset inside the selection,
+/// found by scanning, since glyph widths depend on the fonts the harness has.
+fn select_phrase(doc: &mut HtmlDocument) -> (String, (f32, f32)) {
     let a = doc.query_selector("#a").unwrap().expect("#a");
     doc.set_text_selection(a, 6, a, 19);
     let text = selected(doc);
     assert_eq!(text, "bravo charlie", "the fixture selection did not take");
-    let (node, offset) = doc.find_text_position(INSIDE.0, INSIDE.1).expect("hit test found no text");
-    assert!(node == a && (6..=19).contains(&offset), "{INSIDE:?} is not inside the selection: {offset}");
-    text
+    let mut seen = Vec::new();
+    for y in [5.0_f32, 10.0, 15.0] {
+        for step in 0..200 {
+            let x = step as f32 * 2.0;
+            let pos = doc.find_text_position(x, y);
+            if let Some((node, offset)) = pos {
+                if node == a && (8..=17).contains(&offset) {
+                    return (text, (x, y));
+                }
+            }
+            if step % 25 == 0 {
+                seen.push((x, y, pos));
+            }
+        }
+    }
+    panic!("no point on the first line hit-tests inside the selection: {seen:?}");
 }
-
-/// A point on "charlie", inside the fixture selection.
-const INSIDE: (f32, f32) = (110.0, 10.0);
 
 /// A right press at (`x`, `y`), optionally jiggled before the release.
 fn right_click(doc: &mut HtmlDocument, x: f32, y: f32, jiggle: f32) {
@@ -95,8 +106,8 @@ fn selected(doc: &HtmlDocument) -> String {
 #[test]
 fn a_right_press_inside_the_selection_keeps_it() {
     let mut doc = doc(PAGE);
-    let before = select_phrase(&mut doc);
-    right_click(&mut doc, INSIDE.0, INSIDE.1, 0.0);
+    let (before, inside) = select_phrase(&mut doc);
+    right_click(&mut doc, inside.0, inside.1, 0.0);
     assert_eq!(selected(&doc), before);
 }
 
@@ -105,15 +116,15 @@ fn a_jiggled_right_press_inside_the_selection_keeps_it() {
     // Past the 2px drag threshold. A secondary drag used to arm text
     // selection and move the focus end to the release point.
     let mut doc = doc(PAGE);
-    let before = select_phrase(&mut doc);
-    right_click(&mut doc, INSIDE.0, INSIDE.1, 6.0);
+    let (before, inside) = select_phrase(&mut doc);
+    right_click(&mut doc, inside.0, inside.1, 6.0);
     assert_eq!(selected(&doc), before);
 }
 
 #[test]
 fn a_right_press_on_other_text_clears_the_selection() {
     let mut doc = doc(PAGE);
-    select_phrase(&mut doc);
+    let (_, inside) = select_phrase(&mut doc);
     right_click(&mut doc, 40.0, 30.0, 0.0);
     assert_eq!(selected(&doc), "");
 }
@@ -121,7 +132,7 @@ fn a_right_press_on_other_text_clears_the_selection() {
 #[test]
 fn a_right_press_on_empty_space_clears_the_selection() {
     let mut doc = doc(PAGE);
-    select_phrase(&mut doc);
+    let (_, inside) = select_phrase(&mut doc);
     right_click(&mut doc, 100.0, 150.0, 0.0);
     assert_eq!(selected(&doc), "");
 }
@@ -131,10 +142,10 @@ fn a_left_press_inside_the_selection_still_collapses_it() {
     // The keep rule is for non-primary buttons only. A left press inside a
     // selection starts a new one, which is what a click to deselect means.
     let mut doc = doc(PAGE);
-    select_phrase(&mut doc);
+    let (_, inside) = select_phrase(&mut doc);
     let main = MouseEventButton::Main;
-    doc.handle_ui_event(UiEvent::PointerDown(pointer(INSIDE.0, INSIDE.1, main, main.into())));
-    doc.handle_ui_event(UiEvent::PointerUp(pointer(INSIDE.0, INSIDE.1, main, MouseEventButtons::None)));
+    doc.handle_ui_event(UiEvent::PointerDown(pointer(inside.0, inside.1, main, main.into())));
+    doc.handle_ui_event(UiEvent::PointerUp(pointer(inside.0, inside.1, main, MouseEventButtons::None)));
     assert_eq!(selected(&doc), "");
 }
 
