@@ -780,6 +780,16 @@ pub(crate) fn handle_click(
     }
 }
 
+/// Pixels one wheel line delta scrolls.
+///
+/// winit reports a Windows wheel notch (`WHEEL_DELTA`, 120) as one line, and
+/// Chromium scrolls 100 px for it at the default three lines per notch
+/// (`kScrollbarPixelsPerLine` is 100/3), so a WebView2 page moves 100 px a
+/// notch. The old 20 px made every scroller here five times slower than the
+/// same page in Chromium (polyvox R-OIP.4). The system's lines-per-notch
+/// setting is not read, a divergence for anyone who changed it.
+pub const WHEEL_LINE_PX: f64 = 100.0;
+
 /// Pixel scroll deltas for one wheel event, with the Shift rule applied.
 ///
 /// Holding Shift turns a vertical wheel into a horizontal one. Every browser
@@ -793,7 +803,7 @@ pub(crate) fn handle_click(
 /// and lose the vertical component.
 pub(crate) fn wheel_deltas(delta: BlitzWheelDelta, mods: Modifiers) -> (f64, f64) {
     let (x, y) = match delta {
-        BlitzWheelDelta::Lines(x, y) => (x * 20.0, y * 20.0),
+        BlitzWheelDelta::Lines(x, y) => (x * WHEEL_LINE_PX, y * WHEEL_LINE_PX),
         BlitzWheelDelta::Pixels(x, y) => (x, y),
     };
     if mods.contains(Modifiers::SHIFT) && x == 0.0 {
@@ -856,7 +866,7 @@ mod tests {
     fn line_deltas_scale_before_the_swap() {
         assert_eq!(
             wheel_deltas(BlitzWheelDelta::Lines(0.0, 3.0), Modifiers::SHIFT),
-            (60.0, 0.0)
+            (300.0, 0.0)
         );
     }
 }
