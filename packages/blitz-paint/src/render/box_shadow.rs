@@ -105,7 +105,15 @@ impl ElementCx<'_, '_> {
                 y: shadow.base.vertical.px() as f64,
             });
 
-            scene.push_layer(Mix::Normal, 1.0, self.transform, &padding_box, None, None);
+            scene.push_layer(
+                Fill::NonZero,
+                Mix::Normal,
+                1.0,
+                self.transform,
+                &padding_box,
+                None,
+                None,
+            );
             scene.fill(
                 Fill::NonZero,
                 self.transform,
@@ -115,6 +123,7 @@ impl ElementCx<'_, '_> {
             );
 
             scene.push_layer(
+                Fill::NonZero,
                 Compose::DestOut,
                 1.0,
                 self.transform,
