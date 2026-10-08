@@ -202,6 +202,23 @@ impl Display for NodeNotExistErr {
 }
 impl std::error::Error for NodeNotExistErr {}
 
+/// The document was borrowed when a mounted-element call ran (polyvox R-OIU.2).
+/// `DioxusDocument::poll` holds `inner.borrow_mut()` across
+/// `vdom.render_immediate`, which polls woken tasks, so a task that awaits one
+/// of these calls can run inside that borrow. A miss is "try again later".
+#[derive(Debug)]
+struct DocumentBorrowedErr;
+impl Display for DocumentBorrowedErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "The document is borrowed; try again on a later tick")
+    }
+}
+impl std::error::Error for DocumentBorrowedErr {}
+
+fn document_borrowed_err<T>() -> Pin<Box<dyn Future<Output = MountedResult<T>>>> {
+    Box::pin(async { Err(MountedError::OperationFailed(Box::new(DocumentBorrowedErr))) })
+}
+
 impl RenderedElementBacking for NodeHandle {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -220,9 +237,15 @@ impl RenderedElementBacking for NodeHandle {
     }
 
     fn get_client_rect(&self) -> Pin<Box<dyn Future<Output = MountedResult<PixelsRect>>>> {
-        let Some(bounding_rect) = self.doc_mut().get_client_bounding_rect(self.node_id) else {
+        // A read needs no mutable borrow, and a held borrow is an error, not a
+        // panic (R-OIU.2).
+        let Some(doc) = self.try_doc() else {
+            return document_borrowed_err();
+        };
+        let Some(bounding_rect) = doc.get_client_bounding_rect(self.node_id) else {
             return self.node_not_exist_err();
         };
+        drop(doc);
         let pixels_rect = PixelsRect::new(
             Point2D::new(bounding_rect.x, bounding_rect.y),
             Size2D::new(bounding_rect.width, bounding_rect.height),
@@ -246,7 +269,10 @@ impl RenderedElementBacking for NodeHandle {
     }
 
     fn set_focus(&self, focus: bool) -> Pin<Box<dyn Future<Output = MountedResult<()>>>> {
-        let mut doc = self.doc_mut();
+        // A held borrow is an error, not a panic (R-OIU.2).
+        let Some(mut doc) = self.try_doc_mut() else {
+            return document_borrowed_err();
+        };
         if focus {
             // TODO: queue focus events somehow
             doc.set_focus_to(self.node_id);
