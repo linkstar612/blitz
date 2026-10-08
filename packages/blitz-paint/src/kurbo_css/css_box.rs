@@ -652,6 +652,21 @@ fn start_angle(bt_width: f64, br_width: f64, radii: Vec2) -> f64 {
     radius with 40px/10px border widths), always yielding t in [0, π/2).
     */
 
+    // The degenerate splits, each the limit of the closed form below. With a
+    // zero top/bottom width and a non-zero side width (`border-left: 3px` on a
+    // rounded box) `x` is +inf and `inf / (inf + √2)` is NaN: the whole edge
+    // path went NaN and vello dropped it, so the border vanished and the
+    // renderer logged a warning on every frame. As `k -> inf`, `t -> π/2`:
+    // the side border owns the entire corner. NaN means `0 / 0` (no width on
+    // either side, or no radius on either axis), where nothing is split and
+    // the symmetric π/4 is as good as any finite angle.
+    if x.is_nan() {
+        return std::f64::consts::FRAC_PI_4;
+    }
+    if x.is_infinite() {
+        return FRAC_PI_2;
+    }
+
     use std::f64::consts::SQRT_2;
     let sqrt_x = x.sqrt();
     let s = sqrt_x / (sqrt_x + SQRT_2);
@@ -745,6 +760,46 @@ mod tests {
                 "{edge:?}: no point reached the outer edge {expected}"
             );
         }
+    }
+
+    /// A side border with no top/bottom border on a rounded box: `start_angle`
+    /// divided by a zero width and returned NaN, every edge path through that
+    /// corner was dropped, and vello logged "A path contains NaN" per frame.
+    #[test]
+    fn zero_width_neighbors_give_finite_limit_angles() {
+        let r = Vec2::new(8.0, 8.0);
+        assert_eq!(start_angle(0.0, 3.0, r), FRAC_PI_2);
+        assert_eq!(start_angle(3.0, 0.0, r), 0.0);
+        assert!(start_angle(0.0, 0.0, r).is_finite());
+        assert!(start_angle(3.0, 3.0, Vec2::ZERO).is_finite());
+        assert!(start_angle(0.0, 3.0, Vec2::new(0.0, 8.0)).is_finite());
+    }
+
+    #[test]
+    fn a_left_only_border_on_a_rounded_box_draws_a_finite_path() {
+        let b = CssBox::new(
+            Rect::new(0.0, 0.0, 200.0, 40.0),
+            Insets::new(3.0, 0.0, 0.0, 0.0),
+            Insets::ZERO,
+            0.0,
+            NonUniformRoundedRectRadii {
+                top_left: Vec2::new(8.0, 8.0),
+                top_right: Vec2::new(8.0, 8.0),
+                bottom_right: Vec2::new(8.0, 8.0),
+                bottom_left: Vec2::new(8.0, 8.0),
+            },
+        );
+        let path = b.border_edge_shape(Edge::Left);
+        assert!(!path.elements().is_empty(), "the left edge produced no path");
+        assert!(
+            path.elements().iter().all(|el| match *el {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => p.is_finite(),
+                PathEl::QuadTo(a, b) => a.is_finite() && b.is_finite(),
+                PathEl::CurveTo(a, b, c) => a.is_finite() && b.is_finite() && c.is_finite(),
+                PathEl::ClosePath => true,
+            }),
+            "a control point is not finite: {path:?}"
+        );
     }
 
     #[test]
