@@ -1941,6 +1941,14 @@ impl BaseDocument {
         self.mousedown_node_id
     }
 
+    /// When the last pointer press on the page ran its default action. A host
+    /// that must react to every press (a tooltip hides on one) cannot rely on
+    /// a bubbling listener, since any child that stops propagation starves it;
+    /// the default action still runs for those presses (polyvox R-OIP.5).
+    pub fn last_press_time(&self) -> Option<Instant> {
+        self.last_mousedown_time
+    }
+
     pub fn set_viewport(&mut self, viewport: Viewport) {
         let changes = DeviceChanges::from_viewports(&self.viewport, &viewport);
         self.viewport = viewport;
