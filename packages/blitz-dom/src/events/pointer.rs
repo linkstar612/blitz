@@ -782,13 +782,12 @@ pub(crate) fn handle_click(
 
 /// Pixels one wheel line delta scrolls.
 ///
-/// winit reports a Windows wheel notch (`WHEEL_DELTA`, 120) as one line, and
-/// Chromium scrolls 100 px for it at the default three lines per notch
-/// (`kScrollbarPixelsPerLine` is 100/3), so a WebView2 page moves 100 px a
-/// notch. The old 20 px made every scroller here five times slower than the
-/// same page in Chromium (polyvox R-OIP.4). The system's lines-per-notch
-/// setting is not read, a divergence for anyone who changed it.
-pub const WHEEL_LINE_PX: f64 = 100.0;
+/// Chromium's `kScrollbarPixelsPerLine`, 100/3. winit 0.31 already scales a
+/// Windows notch by the system's lines-per-notch setting (3 by default), so a
+/// notch arrives as three lines and scrolls 100 px, what the same page does in
+/// WebView2, and a changed system setting scales both alike. The old 20 px per
+/// line made a notch 60 px (polyvox R-OIP.4, measured against WebView2).
+pub const WHEEL_LINE_PX: f64 = 100.0 / 3.0;
 
 /// Pixel scroll deltas for one wheel event, with the Shift rule applied.
 ///
@@ -864,9 +863,9 @@ mod tests {
 
     #[test]
     fn line_deltas_scale_before_the_swap() {
-        assert_eq!(
-            wheel_deltas(BlitzWheelDelta::Lines(0.0, 3.0), Modifiers::SHIFT),
-            (300.0, 0.0)
-        );
+        // One default notch (three lines) is Chromium's 100 px.
+        let (x, y) = wheel_deltas(BlitzWheelDelta::Lines(0.0, 3.0), Modifiers::SHIFT);
+        assert!((x - 100.0).abs() < 1e-9, "x = {x}");
+        assert_eq!(y, 0.0);
     }
 }
