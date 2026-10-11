@@ -403,6 +403,48 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.is_visible = true;
     }
 
+    /// Hide the window and drop its renderer's GPU state: the surface, the
+    /// swapchain, the atlases and the scratch buffers of a window nobody can
+    /// see (polyvox-vrc R-OIS.6, a shell closed to the tray). The document,
+    /// its layout and the winit window stay, and so does the poll waker: the
+    /// document keeps running its tasks while hidden. Hidden through winit, so
+    /// winit's visibility flag agrees with the OS. Brought back by
+    /// [`show_after_frame`](Self::show_after_frame).
+    pub fn hide_and_release(&mut self) {
+        self.reveal_pending = false;
+        self.is_visible = false;
+        self.window.set_visible(false);
+        self.renderer.suspend();
+
+        #[cfg(feature = "custom-widget")]
+        self.doc.inner_mut().destroy_surfaces();
+    }
+
+    /// Show a window hidden by [`hide_and_release`](Self::hide_and_release)
+    /// (polyvox-vrc R-OIS.6). The renderer is rebuilt and the window stays
+    /// hidden until a frame is on its surface, the same reveal a new window
+    /// gets, so the first frame on screen is the document, never an empty or
+    /// stale swapchain. Also safe for a window hidden some other way: its
+    /// renderer is still active, so it paints and shows at once.
+    pub fn show_after_frame(&mut self) {
+        // A window hidden behind winit's back (a raw `ShowWindow`) still has
+        // the visible flag, and the reveal's `set_visible(true)` would then
+        // be a no-op. Clearing it first makes that reveal a real show; a
+        // window already on screen keeps its flag, or it would blink.
+        if self.window.is_visible() == Some(false) {
+            self.window.set_visible(false);
+        }
+        self.reveal_pending = true;
+        self.is_visible = true;
+        if self.renderer.is_active() {
+            self.redraw();
+        } else if !self.renderer.is_pending() {
+            // `complete_resume`, on the `ResumeReady` this sends, paints the
+            // first frame and reveals the window off it.
+            self.resume();
+        }
+    }
+
     pub fn suspend(&mut self) {
         self.waker = None;
         self.renderer.suspend();

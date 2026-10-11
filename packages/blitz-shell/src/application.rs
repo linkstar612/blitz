@@ -62,9 +62,20 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                 // The renderer fires `on_ready` after it has sent on the
                 // channel, so `complete_resume` should always succeed here.
                 // If a stale event survives a suspend, dropping it is safe.
+                // A window released between its resume and this event
+                // (polyvox-vrc R-OIS.6, `HideAndRelease`) answers false.
                 if let Some(window) = self.windows.get_mut(&window_id) {
-                    let ok = window.complete_resume();
-                    debug_assert!(ok, "ResumeReady received but renderer not ready");
+                    let _ = window.complete_resume();
+                }
+            }
+            BlitzShellEvent::HideAndRelease { window_id } => {
+                if let Some(window) = self.windows.get_mut(&window_id) {
+                    window.hide_and_release();
+                }
+            }
+            BlitzShellEvent::ShowAfterFrame { window_id } => {
+                if let Some(window) = self.windows.get_mut(&window_id) {
+                    window.show_after_frame();
                 }
             }
             BlitzShellEvent::RequestRedraw { doc_id } => {
