@@ -31,6 +31,20 @@ pub enum BlitzShellEvent {
         window_id: WindowId,
     },
 
+    /// Hide a window and drop its renderer's GPU state: surface, swapchain,
+    /// atlases and scratch (polyvox-vrc R-OIS.6, a shell closed to the tray).
+    /// The document stays. See [`View::hide_and_release`](crate::View::hide_and_release).
+    HideAndRelease {
+        window_id: WindowId,
+    },
+
+    /// Bring back a window hidden by [`Self::HideAndRelease`]: the renderer is
+    /// rebuilt and the window is shown only once a frame is on its surface.
+    /// See [`View::show_after_frame`](crate::View::show_after_frame).
+    ShowAfterFrame {
+        window_id: WindowId,
+    },
+
     /// An accessibility event from `accesskit`.
     #[cfg(feature = "accessibility")]
     Accessibility {
