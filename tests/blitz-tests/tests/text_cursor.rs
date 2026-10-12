@@ -152,7 +152,7 @@ fn ctrl_a_in_a_focused_input_selects_its_text_only() {
 
 #[test]
 fn ctrl_a_in_a_focused_textarea_selects_its_text_only() {
-    // The editor seeds from the `value` attribute (`create_text_editor`), which
-    // is how dioxus-native sets a textarea's value; child text is not read.
-    ctrl_a_selects_the_field_only(r#"<textarea id="f" value="secret value"></textarea>"#);
+    // Upstream #929 seeds a textarea's editor from its child text, as HTML
+    // does; a later `value` attribute write still replaces it.
+    ctrl_a_selects_the_field_only(r#"<textarea id="f">secret value</textarea>"#);
 }
