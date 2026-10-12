@@ -78,12 +78,7 @@ impl DioxusNativeWindowRenderer {
     /// option simply ignore it. `features`/`limits` are only applied by the
     /// GPU-backed `vello`/`vello-hybrid` renderers.
     pub fn with_options(options: RendererOptions) -> Self {
-        let mut config = RendererConfig::default();
-        // polyvox R-OHA.21: an unset base color is TRANSPARENT, not the
-        // renderers' WHITE default, which is painted under every frame and
-        // would turn a transparent overlay window white.
-        config.base_color = Some(options.base_color.unwrap_or(Color::TRANSPARENT));
-        config.composite_alpha_mode = options.alpha_mode;
+        let config = renderer_config(&options);
 
         cfg_if::cfg_if! {
             if #[cfg(any(feature = "vello", feature = "vello-hybrid"))] {
@@ -168,5 +163,37 @@ impl WindowRenderer for DioxusNativeWindowRenderer {
 
     fn render<F: FnOnce(&mut Self::ScenePainter<'_>)>(&mut self, draw_fn: F) {
         self.inner.borrow_mut().render(draw_fn)
+    }
+}
+
+/// The [`RendererConfig`] [`RendererOptions`] forwards to the active renderer.
+///
+/// polyvox R-OHA.21: an unset base color is TRANSPARENT, not the renderers'
+/// WHITE default, which is painted under every frame and would turn a
+/// transparent overlay window white.
+fn renderer_config(options: &RendererOptions) -> RendererConfig {
+    let mut config = RendererConfig::default();
+    config.base_color = Some(options.base_color.unwrap_or(Color::TRANSPARENT));
+    config.composite_alpha_mode = options.alpha_mode;
+    config
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unset_base_color_is_transparent() {
+        let config = renderer_config(&RendererOptions::default());
+        assert_eq!(config.base_color, Some(Color::TRANSPARENT));
+    }
+
+    #[test]
+    fn a_set_base_color_is_kept() {
+        let options = RendererOptions {
+            base_color: Some(Color::WHITE),
+            ..Default::default()
+        };
+        assert_eq!(renderer_config(&options).base_color, Some(Color::WHITE));
     }
 }
