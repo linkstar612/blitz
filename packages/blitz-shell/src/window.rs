@@ -45,6 +45,7 @@ pub struct WindowConfig<Rend: WindowRenderer> {
     doc: Box<dyn Document>,
     pub(crate) attributes: WindowAttributes,
     renderer: Rend,
+    defer_renderer: bool,
 }
 
 impl<Rend: WindowRenderer> WindowConfig<Rend> {
@@ -61,7 +62,19 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
             doc,
             attributes,
             renderer,
+            defer_renderer: false,
         }
+    }
+
+    /// Build no renderer for this window until it is first shown through
+    /// [`View::show_after_frame`] (polyvox-vrc R-OIS.6: a desktop overlay that
+    /// is switched off holds no surface, atlas or scratch). The document is
+    /// built and polled from the start, as a window released by
+    /// [`View::hide_and_release`] is. Ask for a hidden window with it: a
+    /// visible one would reveal nothing, since its first frame never comes.
+    pub fn with_deferred_renderer(mut self, defer: bool) -> Self {
+        self.defer_renderer = defer;
+        self
     }
 }
 
@@ -110,6 +123,9 @@ pub struct View<Rend: WindowRenderer> {
     /// it, and revealing on that frame shows a black window for as long as
     /// the first real render takes (measured at about 500 ms).
     doc_polled: bool,
+    /// The first `resume` installs the poll waker and builds no renderer
+    /// ([`WindowConfig::with_deferred_renderer`]); taken once.
+    defer_first_resume: bool,
     /// The viewport size changed since the renderer's surface was last sized.
     /// `set_size` reconfigures the swapchain and a reconfigured swapchain shows
     /// nothing until the next present, so it is applied right before `render`
@@ -191,6 +207,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         // Create shell provider
         let shell_provider = BlitzShellProvider::new(winit_window.clone(), proxy.clone());
 
+        let defer_first_resume = config.defer_renderer;
         let mut doc = config.doc;
         let mut inner = doc.inner_mut();
         inner.set_viewport(viewport);
@@ -231,6 +248,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             is_visible: reveal_pending || winit_window.is_visible().unwrap_or(true),
             reveal_pending,
             doc_polled: false,
+            defer_first_resume,
             surface_size_dirty: false,
             #[cfg(feature = "accessibility")]
             accessibility,
@@ -300,6 +318,14 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// in response.
     pub fn resume(&mut self) {
         let window_id = self.window_id();
+        // A deferred window (polyvox-vrc R-OIS.6) starts out like a released
+        // one: its document polls, its renderer waits for `show_after_frame`.
+        if std::mem::take(&mut self.defer_first_resume) {
+            if self.waker.is_none() {
+                self.waker = Some(create_waker(&self.proxy, window_id));
+            }
+            return;
+        }
         let animation_time = self.current_animation_time();
 
         let (width, height) = {
