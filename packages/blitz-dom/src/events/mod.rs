@@ -163,6 +163,12 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
             // pointer-button events, not wheel or key ones; that was masked
             // while every custom widget kept the document animating.
             doc.shell_provider.request_redraw();
+            // The hover node does not change while the pointer crosses the
+            // widget, so `set_hover_to` never re-resolves the cursor here; the
+            // widget's answer can change on every move (polyvox R-OJF.3).
+            if matches!(event.data, DomEventData::PointerMove(_)) {
+                doc.shell_provider.set_cursor(doc.get_cursor());
+            }
         }
 
         if set_focus {

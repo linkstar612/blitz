@@ -2,6 +2,7 @@ use std::any::Any;
 
 use anyrender::ResourceId;
 use blitz_traits::events::UiEvent;
+use cursor_icon::CursorIcon;
 pub use style::properties::ComputedValues as ComputedStyles;
 // use accesskit::Node as AccessKitNode;
 // use taffy::{LayoutInput, LayoutOutput};
@@ -134,6 +135,15 @@ pub trait Widget {
     /// Handle input events (mouse, keyboard, etc)
     fn handle_event(&mut self, event: &UiEvent) {
         let _ = event;
+    }
+
+    /// The cursor this widget wants at the pointer position it last saw in
+    /// [`Self::handle_event`], or `None` to use the element's own (the CSS
+    /// `cursor`, else the arrow). An explicit non-`auto` CSS `cursor` on the
+    /// element wins over this, as it does over text in a page. Re-read after
+    /// every event the widget handles.
+    fn cursor(&self) -> Option<CursorIcon> {
+        None
     }
 
     /// The widget's intrinsic dimensions: an intrinsic width, height and

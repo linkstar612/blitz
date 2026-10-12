@@ -88,6 +88,8 @@ pub use crate::layout::replaced::IntrinsicSizes;
 pub use crate::layout::text_transform::{full_size_kana, full_width};
 #[cfg(feature = "custom-widget")]
 pub use crate::node::Widget;
+/// The cursor type `get_cursor` and a custom widget's `cursor` answer with.
+pub use cursor_icon::CursorIcon;
 
 pub use blitz_traits::node_id::NodeId;
 // Re-export taffy: it is part of blitz-dom's public API (e.g. `Node::style`,
