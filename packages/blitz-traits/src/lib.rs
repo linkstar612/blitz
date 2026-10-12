@@ -7,6 +7,7 @@ pub mod navigation;
 pub mod net;
 pub mod node_id;
 pub mod shell;
+pub mod text_raster;
 
 pub use node_id::NodeId;
 pub use smol_str::SmolStr;
