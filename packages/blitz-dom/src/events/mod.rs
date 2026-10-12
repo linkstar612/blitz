@@ -157,6 +157,12 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
 
         if let Some(ui_event) = ui_event {
             widget_data.widget.handle_event(&ui_event);
+            // polyvox: a widget that changes its own state in `handle_event`
+            // has no other way back on screen. This arm returns without
+            // dispatching, and the shell only re-requests a redraw for
+            // pointer-button events, not wheel or key ones; that was masked
+            // while every custom widget kept the document animating.
+            doc.shell_provider.request_redraw();
         }
 
         if set_focus {
