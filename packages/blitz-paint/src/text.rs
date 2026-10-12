@@ -10,7 +10,7 @@ use style::values::computed::{
 };
 use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecorationLength};
 
-use crate::color::{ToColorColor as _, is_invisible};
+use crate::color::{Color, ToColorColor as _, is_invisible};
 use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 use blitz_traits::text_raster::{STEM_DARKEN_ENABLED, TextRaster};
 

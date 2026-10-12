@@ -141,7 +141,7 @@ fn process_custom_widget_node(
     let viewport_scroll = doc.viewport_scroll();
     let node = doc.get_node(node_id)?;
     let abs = node.absolute_position(0.0, 0.0);
-    let l = node.final_layout;
+    let l = node.final_layout();
     let origin_x = initial.0 - viewport_scroll.x * scale
         + (f64::from(abs.x) + f64::from(l.border.left) + f64::from(l.padding.left)) * scale;
     let origin_y = initial.1 - viewport_scroll.y * scale
