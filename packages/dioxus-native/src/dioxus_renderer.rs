@@ -34,7 +34,7 @@ cfg_if::cfg_if! {
 /// (`features`/`limits`) are only present when one of those features is enabled.
 #[derive(Default)]
 pub struct RendererOptions {
-    /// Base (background) color used to clear each frame.
+    /// Base (background) color used to clear each frame. `None` is transparent.
     pub base_color: Option<Color>,
     /// Alpha mode used when compositing the window surface.
     pub alpha_mode: Option<CompositeAlphaMode>,
@@ -79,7 +79,10 @@ impl DioxusNativeWindowRenderer {
     /// GPU-backed `vello`/`vello-hybrid` renderers.
     pub fn with_options(options: RendererOptions) -> Self {
         let mut config = RendererConfig::default();
-        config.base_color = options.base_color;
+        // polyvox R-OHA.21: an unset base color is TRANSPARENT, not the
+        // renderers' WHITE default, which is painted under every frame and
+        // would turn a transparent overlay window white.
+        config.base_color = Some(options.base_color.unwrap_or(Color::TRANSPARENT));
         config.composite_alpha_mode = options.alpha_mode;
 
         cfg_if::cfg_if! {
