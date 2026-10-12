@@ -2644,7 +2644,7 @@ impl BaseDocument {
     /// Every inline root holding text, in document order, skipping any under a
     /// `user-select: none` ancestor. Iterative so a deep tree costs heap, not
     /// the UI thread's stack.
-    fn selectable_inline_roots(&self) -> Vec<usize> {
+    fn selectable_inline_roots(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
         let mut stack = vec![(self.root_element().id, false)];
         while let Some((id, mut unselectable)) = stack.pop() {

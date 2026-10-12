@@ -475,13 +475,15 @@ impl BaseDocument {
     /// user scroll reports the clamped offset anyway.
     pub(crate) fn clamp_scroll_offsets(&mut self) {
         for (_, node) in self.nodes.iter_mut() {
-            if node.scroll_offset.x == 0.0 && node.scroll_offset.y == 0.0 {
+            let offset = *node.scroll_offset();
+            if offset.x == 0.0 && offset.y == 0.0 {
                 continue;
             }
-            let max_x = f64::from(node.final_layout.scroll_width()).max(0.0);
-            let max_y = f64::from(node.final_layout.scroll_height()).max(0.0);
-            node.scroll_offset.x = node.scroll_offset.x.clamp(0.0, max_x);
-            node.scroll_offset.y = node.scroll_offset.y.clamp(0.0, max_y);
+            let max_x = f64::from(node.final_layout().scroll_width()).max(0.0);
+            let max_y = f64::from(node.final_layout().scroll_height()).max(0.0);
+            let offset = node.scroll_offset_mut();
+            offset.x = offset.x.clamp(0.0, max_x);
+            offset.y = offset.y.clamp(0.0, max_y);
         }
         // The viewport's own offset, against the root's overflow. A zero
         // delta through the scroll API is exactly its clamp.
