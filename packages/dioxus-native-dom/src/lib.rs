@@ -29,6 +29,18 @@ pub(crate) fn qual_name(local_name: &str, namespace: Option<&str>) -> QualName {
     }
 }
 
+/// The name of an attribute. Unlike an element, an attribute with no namespace
+/// is in the null namespace, as the HTML parser puts it: Stylo's attribute
+/// selectors match on the namespace, so an `[attr]` selector never matched an
+/// attribute filed under the HTML namespace (polyvox R-OJF.9).
+pub(crate) fn attr_qual_name(local_name: &str, namespace: Option<&str>) -> QualName {
+    QualName {
+        prefix: None,
+        ns: namespace.map(Namespace::from).unwrap_or(ns!()),
+        local: LocalName::from(local_name),
+    }
+}
+
 // Syntax sugar to make tracing calls less noisy in function below
 macro_rules! trace {
     ($pattern:literal) => {{

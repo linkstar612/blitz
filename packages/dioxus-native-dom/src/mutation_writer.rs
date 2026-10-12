@@ -1,5 +1,5 @@
 //! Integration between Dioxus and Blitz
-use crate::{NodeId, qual_name, trace, write_once_attr::WriteOnceAttr};
+use crate::{NodeId, attr_qual_name, qual_name, trace, write_once_attr::WriteOnceAttr};
 use blitz_dom::{BaseDocument, Document, DocumentMutator, Widget};
 use blitz_traits::events::DomEventKind;
 use dioxus_core::{
@@ -397,7 +397,7 @@ fn set_attribute_inner(
         return;
     }
 
-    let name = qual_name(local_name, ns);
+    let name = attr_qual_name(local_name, ns);
 
     // FIXME: more principled handling of special case attributes
     match value {

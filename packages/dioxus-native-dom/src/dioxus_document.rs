@@ -5,7 +5,7 @@ use crate::events::{
     NativeScrollData, NativeTouchData, NativeWheelData, NodeHandle,
 };
 use crate::mutation_writer::{DioxusState, MutationWriter};
-use crate::qual_name;
+use crate::{attr_qual_name, qual_name};
 use blitz_dom::{
     Attribute, BaseDocument, DEFAULT_CSS, DocGuard, DocGuardMut, Document, DocumentConfig,
     EventDriver, EventHandler, Node,
@@ -122,7 +122,7 @@ impl DioxusDocument {
 
         // Create another virtual element to hold the root <div id="main"></div> under the html element
         let main_attr = blitz_dom::Attribute {
-            name: qual_name("id", None),
+            name: attr_qual_name("id", None),
             value: "main".to_string(),
         };
         let main_element_id = mutr.create_element(qual_name("main", None), vec![main_attr]);
@@ -167,7 +167,7 @@ impl DioxusDocument {
         let attributes = attributes
             .iter()
             .map(|(name, value)| Attribute {
-                name: qual_name(name, None),
+                name: attr_qual_name(name, None),
                 value: value.clone(),
             })
             .collect();
