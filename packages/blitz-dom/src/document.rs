@@ -1452,8 +1452,16 @@ impl BaseDocument {
         let hover_node_id = hit.map(|hit| hit.node_id);
         let new_is_text = hit.map(|hit| hit.is_text).unwrap_or(false);
 
-        // Return early if the new node is the same as the already-hovered node
+        // Return early if the new node is the same as the already-hovered node.
+        // The same element can be hit on its own box (padding, line gaps) and
+        // on its text, so a change of `is_text` alone still re-resolves the
+        // cursor: without it, entering a paragraph on its padding kept the
+        // arrow over every glyph after (polyvox R-OJF.3).
         if hover_node_id == self.hover_node_id {
+            if new_is_text != self.hover_node_is_text {
+                self.hover_node_is_text = new_is_text;
+                self.shell_provider.set_cursor(self.get_cursor());
+            }
             return scrollbar_changed;
         }
 
@@ -1689,12 +1697,35 @@ impl BaseDocument {
         }
 
         let style = node.primary_styles()?;
-        let user_select = style.clone_user_select();
+        // `auto` takes the parent's value, as Chromium resolves it: text under
+        // a `user-select: none` container keeps the arrow (polyvox R-OJF.3).
+        let mut user_select = style.clone_user_select();
+        let mut up = node.parent;
+        while user_select == UserSelect::Auto
+            && let Some(id) = up
+        {
+            let parent = &self.nodes[id];
+            if let Some(s) = parent.primary_styles() {
+                user_select = s.clone_user_select();
+            }
+            up = parent.parent;
+        }
         let keyword = style.clone_cursor().keyword;
 
         // Return cursor from style if it is non-auto
         if keyword != CursorKind::Auto {
             return stylo_to_cursor_icon(keyword);
+        }
+
+        // A custom widget draws its own content, so only it knows whether the
+        // pointer is over its text (polyvox R-OJF.3).
+        #[cfg(feature = "custom-widget")]
+        if let Some(icon) = node
+            .element_data()
+            .and_then(|e| e.custom_widget_data())
+            .and_then(|w| w.widget.cursor())
+        {
+            return Some(icon);
         }
 
         // Return text cursor for text inputs

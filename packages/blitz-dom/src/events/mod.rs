@@ -169,6 +169,12 @@ pub(crate) fn handle_dom_event<F: FnMut(DomEvent)>(
         // document permanently animating.
         if handled {
             doc.shell_provider.request_redraw();
+            // The hover node does not change while the pointer crosses the
+            // widget, so `set_hover_to` never re-resolves the cursor here; the
+            // widget's answer can change on every move (polyvox R-OJF.3).
+            if matches!(event.data, DomEventData::PointerMove(_)) {
+                doc.shell_provider.set_cursor(doc.get_cursor());
+            }
         }
 
         if set_focus {

@@ -70,6 +70,8 @@ mod accessibility;
 
 #[cfg(feature = "custom-widget")]
 pub use crate::node::Widget;
+/// The cursor type `get_cursor` and a custom widget's `cursor` answer with.
+pub use cursor_icon::CursorIcon;
 
 pub use config::{DocumentConfig, StyleThreading};
 pub use document::{BaseDocument, DocGuard, DocGuardMut, Document, PlainDocument};
