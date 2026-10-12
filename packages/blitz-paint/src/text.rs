@@ -935,9 +935,9 @@ mod tests {
         let mut b = lcx.ranged_builder(&mut fcx, TEXT, 1.0, true);
         b.push_default(StyleProperty::FontFamily(parley::style::FontFamily::Source(family.into())));
         b.push_default(StyleProperty::FontSize(13.0));
-        b.push_default(StyleProperty::Brush(TextBrush { id: 1 }));
+        b.push_default(StyleProperty::Brush(TextBrush { id: NodeId::from_u64(1) }));
         b.push(StyleProperty::FontSize(11.0), 23..TEXT.len());
-        b.push(StyleProperty::Brush(TextBrush { id: 2 }), 23..TEXT.len());
+        b.push(StyleProperty::Brush(TextBrush { id: NodeId::from_u64(2) }), 23..TEXT.len());
         let mut layout = b.build(TEXT);
         layout.break_all_lines(Some(301.3));
         layout.align(Alignment::Center, AlignmentOptions::default());

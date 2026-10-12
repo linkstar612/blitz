@@ -475,13 +475,18 @@ impl BaseDocument {
     /// user scroll reports the clamped offset anyway.
     pub(crate) fn clamp_scroll_offsets(&mut self) {
         for (_, node) in self.nodes.iter_mut() {
-            let offset = *node.scroll_offset();
+            // Text and comment nodes have no layout data (and never scroll);
+            // the accessors panic on them.
+            let Some(data) = node.try_layout_data_mut() else {
+                continue;
+            };
+            let offset = data.scroll_offset;
             if offset.x == 0.0 && offset.y == 0.0 {
                 continue;
             }
-            let max_x = f64::from(node.final_layout().scroll_width()).max(0.0);
-            let max_y = f64::from(node.final_layout().scroll_height()).max(0.0);
-            let offset = node.scroll_offset_mut();
+            let max_x = f64::from(data.final_layout.scroll_width()).max(0.0);
+            let max_y = f64::from(data.final_layout.scroll_height()).max(0.0);
+            let offset = &mut data.scroll_offset;
             offset.x = offset.x.clamp(0.0, max_x);
             offset.y = offset.y.clamp(0.0, max_y);
         }

@@ -7,7 +7,7 @@
 //! running out of its box. The invariant: after a resolve, every inline root
 //! is broken at its own content width.
 
-use blitz_dom::{Document, DocumentConfig};
+use blitz_dom::DocumentConfig;
 use blitz_html::{HtmlDocument, HtmlProvider};
 use blitz_traits::shell::{ColorScheme, Viewport};
 use std::sync::Arc;

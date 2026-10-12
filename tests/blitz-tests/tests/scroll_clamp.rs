@@ -53,15 +53,15 @@ fn shrinking_content_clamps_the_scroll_offset_and_stays_painted() {
     let extra = doc.query_selector("#extra").unwrap().unwrap();
 
     // To the end: 1000 of content in a 100 box.
-    doc.scroll_by(Some(scroller), 0.0, -10_000.0, &mut |_| {});
-    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset.y, 900.0);
+    doc.scroll_node_by(scroller, 0.0, -10_000.0, |_| {});
+    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset().y, 900.0);
 
     // The filler goes: 300 of content is left, so the new end is 200.
     doc.mutate().remove_and_drop_node(extra);
     doc.resolve(0.0);
 
     assert_eq!(
-        doc.get_node(scroller).unwrap().scroll_offset.y,
+        doc.get_node(scroller).unwrap().scroll_offset().y,
         200.0,
         "the offset was left past the new end of the content"
     );
@@ -73,13 +73,13 @@ fn content_that_no_longer_overflows_scrolls_back_to_the_top() {
     let mut doc = doc(50, 950);
     let scroller = doc.query_selector("#scroller").unwrap().unwrap();
     let extra = doc.query_selector("#extra").unwrap().unwrap();
-    doc.scroll_by(Some(scroller), 0.0, -400.0, &mut |_| {});
-    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset.y, 400.0);
+    doc.scroll_node_by(scroller, 0.0, -400.0, |_| {});
+    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset().y, 400.0);
 
     doc.mutate().remove_and_drop_node(extra);
     doc.resolve(0.0);
 
-    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset.y, 0.0);
+    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset().y, 0.0);
     assert_eq!(pixel(&mut doc, 40, 20), BLUE);
 }
 
@@ -87,8 +87,8 @@ fn content_that_no_longer_overflows_scrolls_back_to_the_top() {
 fn an_offset_still_in_range_is_left_alone() {
     let mut doc = doc(300, 700);
     let scroller = doc.query_selector("#scroller").unwrap().unwrap();
-    doc.scroll_by(Some(scroller), 0.0, -350.0, &mut |_| {});
+    doc.scroll_node_by(scroller, 0.0, -350.0, |_| {});
     doc.resolve(0.0);
-    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset.y, 350.0);
+    assert_eq!(doc.get_node(scroller).unwrap().scroll_offset().y, 350.0);
 }
 

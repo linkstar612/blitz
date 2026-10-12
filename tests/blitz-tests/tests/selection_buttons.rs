@@ -137,7 +137,7 @@ fn a_jiggled_right_press_inside_the_selection_keeps_it() {
 #[test]
 fn a_right_press_on_other_text_clears_the_selection() {
     let mut doc = doc(PAGE);
-    let (_, inside) = select_phrase(&mut doc);
+    let _ = select_phrase(&mut doc);
     right_click(&mut doc, 40.0, 30.0, 0.0);
     assert_eq!(selected(&doc), "");
 }
@@ -145,7 +145,7 @@ fn a_right_press_on_other_text_clears_the_selection() {
 #[test]
 fn a_right_press_on_empty_space_clears_the_selection() {
     let mut doc = doc(PAGE);
-    let (_, inside) = select_phrase(&mut doc);
+    let _ = select_phrase(&mut doc);
     right_click(&mut doc, 100.0, 150.0, 0.0);
     assert_eq!(selected(&doc), "");
 }

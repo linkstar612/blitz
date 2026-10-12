@@ -121,7 +121,7 @@ fn ctrl_a() -> UiEvent {
     })
 }
 
-fn field_selection(doc: &HtmlDocument, id: usize) -> String {
+fn field_selection(doc: &HtmlDocument, id: blitz_dom::NodeId) -> String {
     doc.get_node(id)
         .and_then(|n| n.element_data())
         .and_then(|e| e.text_input_data())
