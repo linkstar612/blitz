@@ -69,6 +69,10 @@ pub enum UiEvent {
     KeyDown(BlitzKeyEvent),
     Ime(BlitzImeEvent),
     AppleStandardKeybinding(SmolStr),
+    /// The pointer left the window (polyvox R-OJL.2). The document drops its
+    /// hover state and sends the out and leave events a browser sends.
+    /// Appended last: the enum is `repr(u8)` and `discriminant` reads it.
+    PointerLeave(BlitzPointerEvent),
 }
 impl UiEvent {
     pub fn discriminant(&self) -> u8 {

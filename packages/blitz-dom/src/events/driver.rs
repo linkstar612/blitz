@@ -145,7 +145,37 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         hover_node_id
     }
 
+    /// The pointer left the window (polyvox R-OJL.2). Hover is cleared, as
+    /// it is when no element is under the pointer, and the hovered element
+    /// gets `pointerout`/`mouseout` and its whole chain `pointerleave`/
+    /// `mouseleave`, innermost first, as Chromium sends them. Without this
+    /// the last hovered element kept `:hover` (and its `mouseenter` state)
+    /// until the pointer came back.
+    pub fn handle_pointer_leave(&mut self, event: &BlitzPointerEvent) {
+        let prev_hover_node_id = self.doc.inner().hover_node_id;
+        self.doc.inner_mut().clear_hover();
+        let Some(target) = prev_hover_node_id else {
+            return;
+        };
+        let chain = self.doc.inner().node_chain(target);
+        let is_mouse = event.is_mouse();
+        self.handle_dom_event(DomEvent::new(target, DomEventData::PointerOut(event.clone())));
+        if is_mouse {
+            self.handle_dom_event(DomEvent::new(target, DomEventData::MouseOut(event.clone())));
+        }
+        for node_id in chain {
+            self.handle_dom_event(DomEvent::new(node_id, DomEventData::PointerLeave(event.clone())));
+            if is_mouse {
+                self.handle_dom_event(DomEvent::new(node_id, DomEventData::MouseLeave(event.clone())));
+            }
+        }
+    }
+
     pub fn handle_ui_event(&mut self, event: UiEvent) {
+        if let UiEvent::PointerLeave(data) = &event {
+            self.handle_pointer_leave(data);
+            return;
+        }
         let doc = self.doc.inner();
 
         let mut should_clear_hover = false;
@@ -195,6 +225,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             UiEvent::KeyDown(_) => focussed_node_id,
             UiEvent::Ime(_) => focussed_node_id,
             UiEvent::AppleStandardKeybinding(_) => focussed_node_id,
+            UiEvent::PointerLeave(_) => return,
         };
         // Fall back to the root element. A document without a root element (e.g. an
         // empty iframe sub-document) has no event target, so there is nothing to do.
@@ -260,6 +291,7 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 self.run_default_action(&mut dom_event);
                 self.process_queue();
             }
+            UiEvent::PointerLeave(_) => {}
         };
 
         // Update document input state (hover, focus, active, etc)

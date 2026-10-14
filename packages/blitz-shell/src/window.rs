@@ -895,6 +895,25 @@ impl<Rend: WindowRenderer> View<Rend> {
 
                     self.doc.handle_ui_event(UiEvent::PointerCancel(event));
                     self.request_redraw();
+                } else if id == BlitzPointerId::Mouse {
+                    // polyvox R-OJL.2: a mouse leaving the window ends hover,
+                    // as it does in a browser. Blitz only re-resolved hover on
+                    // a move, so the last hovered element kept `:hover` and
+                    // never saw `mouseleave` until the pointer came back.
+                    let position = position.unwrap_or(self.pointer_pos);
+                    let event = BlitzPointerEvent {
+                        id,
+                        is_primary: primary,
+                        coords: self.pointer_coords(position),
+                        button: Default::default(),
+                        buttons: self.buttons,
+                        mods: winit_modifiers_to_kbt_modifiers(self.keyboard_modifiers.state()),
+                        details: PointerDetails::default(),
+                        element: Default::default(),
+                        active_pointers: Arc::clone(&self.active_events),
+                    };
+                    self.doc.handle_ui_event(UiEvent::PointerLeave(event));
+                    self.request_redraw();
                 }
             }
             WindowEvent::PointerMoved { position, source, primary, .. } => {
