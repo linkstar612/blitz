@@ -63,6 +63,10 @@ impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
 
+        // The stylesheet invalidation below reads old classes and ids from every
+        // snapshot without checking `has_attrs()` (polyvox R-OJS.1).
+        self.fill_state_only_snapshot_attrs();
+
         let guard = &self.guard;
         let guards = StylesheetGuards {
             author: &guard.read(),

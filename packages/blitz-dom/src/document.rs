@@ -1457,35 +1457,7 @@ impl BaseDocument {
                 .is_none_or(|snapshot| snapshot.attrs.is_none());
 
         let (attrs, changed_attrs) = if needs_attrs {
-            let node = &self.nodes[node_id];
-            let attrs: Option<Vec<_>> = node.attrs().map(|attrs| {
-                attrs
-                    .iter()
-                    .map(|attr| {
-                        let ident = AttrIdentifier {
-                            local_name: GenericAtomIdent(attr.name.local.clone()),
-                            name: GenericAtomIdent(attr.name.local.clone()),
-                            namespace: GenericAtomIdent(attr.name.ns.clone()),
-                            prefix: None,
-                        };
-
-                        let value = if attr.name.local == local_name!("id") {
-                            AttrValue::Atom(Atom::from(&*attr.value))
-                        } else if attr.name.local == local_name!("class") {
-                            let classes = attr
-                                .value
-                                .split_ascii_whitespace()
-                                .map(Atom::from)
-                                .collect();
-                            AttrValue::TokenList(OnceLock::from(attr.value.clone()), classes)
-                        } else {
-                            AttrValue::String(attr.value.clone())
-                        };
-
-                        (ident, value)
-                    })
-                    .collect()
-            });
+            let attrs = snapshot_attrs(&self.nodes[node_id]);
 
             let changed_attrs: Vec<_> = attrs
                 .as_ref()
@@ -1519,6 +1491,27 @@ impl BaseDocument {
                     other_attributes_changed: needs_attrs,
                 },
             );
+        }
+    }
+
+    /// Give every state-only snapshot the element's current attributes.
+    ///
+    /// Stylo's stylesheet invalidation (`StylesheetInvalidationSet::process_style`)
+    /// reads a snapshot's old classes and id without checking `has_attrs()`, so a
+    /// state-only snapshot (a hover, focus or press since the last flush) met by
+    /// a stylesheet added or removed in the same flush unwrapped the absent
+    /// attributes and panicked. A snapshot holds no attributes only because none
+    /// mutated since the last flush, so the current attributes are the old ones.
+    /// The changed flags stay false and `changed_attrs` stays empty, so the
+    /// restyle traversal sees no attribute change (polyvox R-OJS.1).
+    pub(crate) fn fill_state_only_snapshot_attrs(&mut self) {
+        let nodes = &self.nodes;
+        for (opaque, snapshot) in self.snapshots.iter_mut() {
+            if snapshot.attrs.is_some() {
+                continue;
+            }
+            let id = NodeId::from_u64(opaque.id() as u64);
+            snapshot.attrs = Some(nodes.get(id).and_then(snapshot_attrs).unwrap_or_default());
         }
     }
 
@@ -3005,6 +2998,39 @@ mod hover_state_tests {
     }
 }
 
+/// An element's attributes in the form a [`ServoElementSnapshot`] stores them,
+/// or `None` for a node that is not an element.
+fn snapshot_attrs(node: &Node) -> Option<Vec<(AttrIdentifier, AttrValue)>> {
+    node.attrs().map(|attrs| {
+        attrs
+            .iter()
+            .map(|attr| {
+                let ident = AttrIdentifier {
+                    local_name: GenericAtomIdent(attr.name.local.clone()),
+                    name: GenericAtomIdent(attr.name.local.clone()),
+                    namespace: GenericAtomIdent(attr.name.ns.clone()),
+                    prefix: None,
+                };
+
+                let value = if attr.name.local == local_name!("id") {
+                    AttrValue::Atom(Atom::from(&*attr.value))
+                } else if attr.name.local == local_name!("class") {
+                    let classes = attr
+                        .value
+                        .split_ascii_whitespace()
+                        .map(Atom::from)
+                        .collect();
+                    AttrValue::TokenList(OnceLock::from(attr.value.clone()), classes)
+                } else {
+                    AttrValue::String(attr.value.clone())
+                };
+
+                (ident, value)
+            })
+            .collect()
+    })
+}
+
 #[cfg(test)]
 mod hover_invalidation_tests {
     use super::*;
@@ -3363,6 +3389,47 @@ mod hover_invalidation_tests {
             Some("https://example.com/a.png"),
             "unhover should flush the restored background image"
         );
+    }
+
+    /// A hover leaves state-only snapshots (no attributes) on the hovered
+    /// element and its ancestors. Adding a stylesheet with class selectors in
+    /// the same flush makes Stylo's stylesheet invalidation read the old
+    /// classes from those snapshots, which unwrapped the absent attributes and
+    /// panicked in `selector_parser.rs` (polyvox R-OJS.1).
+    #[test]
+    fn stylesheet_added_after_hover_does_not_panic() {
+        let (mut doc, div, span) = make_doc();
+        let body = doc.nodes[div].parent.unwrap();
+
+        // Give the hovered div a class the new stylesheet will target.
+        {
+            let mut mutator = doc.mutate();
+            mutator.set_attribute(div, qual_name!("class"), "card");
+        }
+        doc.resolve(0.0);
+        let initial_color = text_color(&doc, span);
+
+        // Hover the div: this takes state-only snapshots of the div and its
+        // ancestors, since a `div:hover` rule exists.
+        doc.set_hover_to(10.0, 10.0);
+        assert!(doc.nodes[div].is_hovered());
+
+        // Before the next flush, append a `<style>` element with a class rule.
+        {
+            let mut mutator = doc.mutate();
+            let style_el = mutator.create_element(qual_name!("style"), vec![]);
+            let css = mutator.create_text_node(".card span { color: rgb(1, 2, 3); }");
+            mutator.append_children(style_el, &[css]);
+            mutator.append_children(body, &[style_el]);
+        }
+        doc.resolve(0.0);
+
+        assert_ne!(
+            text_color(&doc, span),
+            initial_color,
+            "the stylesheet added during the hover should apply"
+        );
+        assert!(doc.snapshots.is_empty(), "the flush clears every snapshot");
     }
 }
 
