@@ -62,6 +62,8 @@ use style::values::computed::text::TextAlign as StyloTextAlign;
 impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
+        // polyvox R-OJN.4: a new flush, so no cached `:lang()` walk survives.
+        LANG_GENERATION.fetch_add(1, Ordering::Relaxed);
 
         // The stylesheet invalidation below reads old classes and ids from every
         // snapshot without checking `has_attrs()` (polyvox R-OJS.1).
@@ -858,18 +860,7 @@ impl<'a> TElement for BlitzNode<'a> {
     ) -> bool {
         let element_lang: Option<String> = match override_lang {
             Some(lang) => lang.map(|v| AsRef::<str>::as_ref(&v).to_string()),
-            None => {
-                let mut current = Some(*self);
-                let mut found = None;
-                while let Some(el) = current {
-                    if let Some(lang) = own_lang_attr(el) {
-                        found = Some(lang.to_string());
-                        break;
-                    }
-                    current = el.parent_element();
-                }
-                found
-            }
+            None => return inherited_lang(self, |lang| lang_range_matches(lang, value)),
         };
         element_lang.is_some_and(|lang| lang_range_matches(&lang, value))
     }
@@ -1539,6 +1530,48 @@ fn parse_inline() {
     // );
 
     // let val = CSSInlineStyleDeclaration();
+}
+
+/// polyvox R-OJN.4: bumped at the start of every style flush. Keys the
+/// per-thread `:lang()` cache below.
+static LANG_GENERATION: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+thread_local! {
+    /// polyvox R-OJN.4: the last element whose language this thread walked,
+    /// as (flush generation, node address, language). Stylo tests every
+    /// `:lang()` selector against one element before moving on, and a sheet
+    /// carries about eighty of them, so one entry saves all but the first
+    /// ancestor walk. Used only on layout threads (inside a flush, where no
+    /// attribute changes); a selector query between flushes walks every time.
+    static LANG_CACHE: std::cell::RefCell<(usize, usize, Option<Box<str>>)> =
+        const { std::cell::RefCell::new((usize::MAX, 0, None)) };
+}
+
+/// polyvox R-OJN.4: `f` applied to the language the element inherits (its own
+/// `lang`, else the nearest ancestor's); false when none declares one.
+fn inherited_lang(node: &Node, f: impl Fn(&str) -> bool) -> bool {
+    let walk = || {
+        let mut current = Some(node);
+        while let Some(el) = current {
+            if let Some(lang) = own_lang_attr(el) {
+                return Some(lang);
+            }
+            current = selectors::Element::parent_element(&el);
+        }
+        None
+    };
+    if !style::thread_state::get().is_layout() {
+        return walk().is_some_and(f);
+    }
+    let generation = LANG_GENERATION.load(Ordering::Relaxed);
+    let address = node as *const Node as usize;
+    LANG_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.0 != generation || cache.1 != address {
+            *cache = (generation, address, walk().map(Box::from));
+        }
+        cache.2.as_deref().is_some_and(f)
+    })
 }
 
 /// polyvox R-OJN.4: the element's own `xml:lang` (XML namespace, or the
