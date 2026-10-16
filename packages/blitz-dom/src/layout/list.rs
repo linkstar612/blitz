@@ -89,7 +89,8 @@ fn node_list_item_child(
             let mut builder = doc.layout_ctx.tree_builder(
                 &mut font_ctx,
                 doc.viewport.scale(),
-                true,
+                // polyvox R-OJL.4 (D45): fractional line metrics, as construct.rs.
+                false,
                 &parley_style,
             );
 

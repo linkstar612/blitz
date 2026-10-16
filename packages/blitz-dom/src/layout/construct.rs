@@ -1055,8 +1055,16 @@ pub(crate) fn build_inline_layout_into(
             ..Default::default()
         });
 
-    // Create a parley tree builder
-    let mut builder = layout_ctx.tree_builder(font_ctx, scale, true, &parley_style);
+    // Create a parley tree builder.
+    //
+    // polyvox R-OJL.4 (D45): `quantize` off. Parley's quantize rounds each line
+    // box's block extent to whole pixels, so a 19.5 px line measured 19 or 20
+    // and every paragraph block came out short or long against Chromium, which
+    // keeps fractional (1/64 px) layout. The drift added up down a page.
+    // Box edges are still rounded in absolute coordinates after layout, and
+    // glifo snaps each baseline to a device row when it hints, so borders and
+    // glyphs stay on the pixel grid.
+    let mut builder = layout_ctx.tree_builder(font_ctx, scale, false, &parley_style);
     if let Some(style) = root_node_style.as_deref() {
         builder.set_base_direction(stylo_to_parley::base_direction(
             style.clone_direction(),
