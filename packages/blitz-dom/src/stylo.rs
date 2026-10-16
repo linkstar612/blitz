@@ -483,7 +483,7 @@ impl selectors::Element for BlitzNode<'_> {
             NonTSPseudoClass::Fullscreen => false,
             NonTSPseudoClass::Hover => self.element_state().contains(ElementState::HOVER),
             NonTSPseudoClass::Indeterminate => false,
-            NonTSPseudoClass::Lang(_) => false,
+            NonTSPseudoClass::Lang(ref lang) => self.match_element_lang(None, lang),
             NonTSPseudoClass::CustomState(_) => false,
             NonTSPseudoClass::Link => self.element_state().contains(ElementState::UNVISITED),
             NonTSPseudoClass::PlaceholderShown => false,
@@ -843,15 +843,35 @@ impl<'a> TElement for BlitzNode<'a> {
     }
 
     fn lang_attr(&self) -> Option<style::selector_parser::AttrValue> {
-        None
+        own_lang_attr(self).map(style::selector_parser::AttrValue::from)
     }
 
+    // polyvox R-OJN.4: `:lang()` per the HTML rule. The element's own
+    // `xml:lang` or `lang`, else the nearest ancestor's, compared with the
+    // selector's range by case-insensitive BCP 47 prefix match. An empty
+    // `lang=""` is a declared unknown language: it stops the walk and
+    // matches nothing.
     fn match_element_lang(
         &self,
-        _override_lang: Option<Option<style::selector_parser::AttrValue>>,
-        _value: &style::selector_parser::Lang,
+        override_lang: Option<Option<style::selector_parser::AttrValue>>,
+        value: &style::selector_parser::Lang,
     ) -> bool {
-        false
+        let element_lang: Option<String> = match override_lang {
+            Some(lang) => lang.map(|v| AsRef::<str>::as_ref(&v).to_string()),
+            None => {
+                let mut current = Some(*self);
+                let mut found = None;
+                while let Some(el) = current {
+                    if let Some(lang) = own_lang_attr(el) {
+                        found = Some(lang.to_string());
+                        break;
+                    }
+                    current = el.parent_element();
+                }
+                found
+            }
+        };
+        element_lang.is_some_and(|lang| lang_range_matches(&lang, value))
     }
 
     fn is_html_document_body_element(&self) -> bool {
@@ -1519,4 +1539,164 @@ fn parse_inline() {
     // );
 
     // let val = CSSInlineStyleDeclaration();
+}
+
+/// polyvox R-OJN.4: the element's own `xml:lang` (XML namespace, or the
+/// literal `xml:lang` name the HTML parser produces) or else its `lang`.
+fn own_lang_attr(node: &Node) -> Option<&str> {
+    let attrs = node.data.attrs()?;
+    attrs
+        .iter()
+        .find(|a| {
+            (a.name.ns == ns!(xml) && &*a.name.local == "lang") || &*a.name.local == "xml:lang"
+        })
+        .or_else(|| {
+            attrs
+                .iter()
+                .find(|a| a.name.ns == ns!() && a.name.local == local_name!("lang"))
+        })
+        .map(|a| a.value.as_str())
+}
+
+/// polyvox R-OJN.4: BCP 47 prefix match, ASCII case-insensitive. `range`
+/// matches `lang` when they are equal or `lang` starts with `range` then `-`.
+/// `*` matches any non-empty language. An empty `lang` matches nothing.
+pub(crate) fn lang_range_matches(lang: &str, range: &str) -> bool {
+    if lang.is_empty() || range.is_empty() {
+        return false;
+    }
+    if range == "*" {
+        return true;
+    }
+    lang.len() >= range.len()
+        && lang.as_bytes()[..range.len()].eq_ignore_ascii_case(range.as_bytes())
+        && (lang.len() == range.len() || lang.as_bytes()[range.len()] == b'-')
+}
+
+#[cfg(test)]
+mod lang_pseudo_class_tests {
+    //! polyvox R-OJN.4: `:lang()` matching (exact, prefix, inherited, no
+    //! match, empty `lang`, case, and a `lang` change on an ancestor).
+    use super::lang_range_matches;
+    use crate::{Attribute, BaseDocument, DocumentConfig, qual_name};
+    use blitz_traits::node_id::NodeId;
+    use blitz_traits::shell::{ColorScheme, Viewport};
+
+    const SHEET: &str = "span { color: rgb(0, 0, 0); } \
+        span:lang(ja) { color: rgb(255, 0, 0); } \
+        span:lang(zh-Hant) { color: rgb(0, 0, 255); }";
+
+    /// `<html lang=html_lang><body><div lang=div_lang><span/></div></body></html>`;
+    /// `None` leaves the attribute off.
+    fn make_doc(html_lang: Option<&str>, div_lang: Option<&str>) -> (BaseDocument, NodeId, NodeId) {
+        let mut doc = BaseDocument::new(DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        });
+        doc.add_user_agent_stylesheet(SHEET);
+        let root_id = doc.root_node().id;
+        let lang = |v: Option<&str>| {
+            v.map(|value| Attribute {
+                name: qual_name!("lang"),
+                value: value.to_string(),
+            })
+            .into_iter()
+            .collect::<Vec<_>>()
+        };
+        let mut mutator = doc.mutate();
+        let html = mutator.create_element(qual_name!("html"), lang(html_lang));
+        let body = mutator.create_element(qual_name!("body"), vec![]);
+        let div = mutator.create_element(qual_name!("div"), lang(div_lang));
+        let span = mutator.create_element(qual_name!("span"), vec![]);
+        let text = mutator.create_text_node("text");
+        mutator.append_children(span, &[text]);
+        mutator.append_children(div, &[span]);
+        mutator.append_children(body, &[div]);
+        mutator.append_children(html, &[body]);
+        mutator.append_children(root_id, &[html]);
+        drop(mutator);
+        doc.resolve(0.0);
+        (doc, div, span)
+    }
+
+    fn color(doc: &BaseDocument, id: NodeId) -> String {
+        format!("{:?}", doc.nodes[id].primary_styles().unwrap().clone_color())
+    }
+
+    fn reference(c: &str) -> String {
+        let (mut doc, _, span) = make_doc(None, None);
+        doc.add_user_agent_stylesheet(&format!("span {{ color: {c} !important; }}"));
+        doc.resolve(0.0);
+        color(&doc, span)
+    }
+
+    #[test]
+    fn range_matching_rules() {
+        assert!(lang_range_matches("ja", "ja"));
+        assert!(lang_range_matches("ja-JP", "ja"));
+        assert!(lang_range_matches("ZH-hant-TW", "zh-Hant"));
+        assert!(!lang_range_matches("jav", "ja"));
+        assert!(!lang_range_matches("zh-Hans", "zh-Hant"));
+        assert!(!lang_range_matches("zh", "zh-Hant"));
+        assert!(!lang_range_matches("", "ja"));
+        assert!(lang_range_matches("en", "*"));
+        assert!(!lang_range_matches("", "*"));
+    }
+
+    #[test]
+    fn exact_match() {
+        let (doc, _, span) = make_doc(None, Some("ja"));
+        assert_eq!(color(&doc, span), reference("rgb(255, 0, 0)"));
+    }
+
+    #[test]
+    fn prefix_match_is_case_insensitive() {
+        let (doc, _, span) = make_doc(None, Some("JA-jp"));
+        assert_eq!(color(&doc, span), reference("rgb(255, 0, 0)"));
+        let (doc, _, span) = make_doc(None, Some("zh-hant-TW"));
+        assert_eq!(color(&doc, span), reference("rgb(0, 0, 255)"));
+    }
+
+    #[test]
+    fn inherited_from_nearest_ancestor() {
+        let (doc, _, span) = make_doc(Some("ja"), None);
+        assert_eq!(color(&doc, span), reference("rgb(255, 0, 0)"));
+        // The nearer ancestor wins over the root.
+        let (doc, _, span) = make_doc(Some("ja"), Some("zh-Hant"));
+        assert_eq!(color(&doc, span), reference("rgb(0, 0, 255)"));
+    }
+
+    #[test]
+    fn no_match() {
+        let black = reference("rgb(0, 0, 0)");
+        for (html, div) in [(None, None), (Some("en"), None), (None, Some("jav")), (None, Some("zh-Hans"))] {
+            let (doc, _, span) = make_doc(html, div);
+            assert_eq!(color(&doc, span), black, "html={html:?} div={div:?}");
+        }
+    }
+
+    #[test]
+    fn empty_lang_stops_inheritance() {
+        let (doc, _, span) = make_doc(Some("ja"), Some(""));
+        assert_eq!(color(&doc, span), reference("rgb(0, 0, 0)"));
+    }
+
+    #[test]
+    fn ancestor_lang_change_restyles_descendant() {
+        let (mut doc, div, span) = make_doc(None, Some("en"));
+        assert_eq!(color(&doc, span), reference("rgb(0, 0, 0)"));
+        {
+            let mut mutator = doc.mutate();
+            mutator.set_attribute(div, qual_name!("lang"), "ja");
+        }
+        doc.resolve(0.0);
+        assert_eq!(color(&doc, span), reference("rgb(255, 0, 0)"));
+        {
+            let mut mutator = doc.mutate();
+            mutator.set_attribute(div, qual_name!("lang"), "ko");
+        }
+        doc.resolve(0.0);
+        assert_eq!(color(&doc, span), reference("rgb(0, 0, 0)"));
+    }
+
 }
