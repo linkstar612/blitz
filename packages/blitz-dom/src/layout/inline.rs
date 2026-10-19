@@ -588,8 +588,8 @@ impl LayoutPassState<'_> {
                     AvailableSpace::Definite(limit) => (limit * scale)
                         .min(max_content_width + float_width)
                         .max(min_content_width),
-                }
-                .ceil();
+                };
+                let computed_width = ceil_to_layout_unit(computed_width, scale);
 
                 let style_width = node_size.width.map(|w| w * scale);
                 let min_width = node_min_size.width.map(|w| w * scale);
@@ -632,7 +632,7 @@ impl LayoutPassState<'_> {
                 .inline_layout_data = Some(inline_layout);
 
             let measured_size = inputs.known_dimensions.unwrap_or(taffy::Size {
-                width: width.ceil() / scale,
+                width: width / scale,
                 // Height is ignored if RequestedAxis if Horizontal
                 height: 0.0,
             });
@@ -1186,4 +1186,19 @@ impl LayoutPassState<'_> {
 #[inline(always)]
 fn f32_max(a: f32, b: f32) -> f32 {
     a.max(b)
+}
+
+/// Chromium keeps a measured inline width in LayoutUnits (1/64 CSS px). The
+/// width is rounded UP to that grid, plus a hundredth of a unit, so a relayout
+/// at the measured size never wraps the last word on float error (parley fits
+/// a line while `next_x <= max_advance`). This replaces a whole-pixel `.ceil()`
+/// (upstream a1c00e08) that guarded the same wrap but made every shrink-to-fit
+/// text box up to 1 px wider than Chromium's (polyvox R-OKC.8).
+fn ceil_to_layout_unit(device_px: f32, scale: f32) -> f32 {
+    const UNITS_PER_PX: f32 = 64.0;
+    const SLACK_UNITS: f32 = 0.01;
+    if !device_px.is_finite() || scale <= 0.0 {
+        return device_px;
+    }
+    ((device_px / scale) * UNITS_PER_PX + SLACK_UNITS).ceil() / UNITS_PER_PX * scale
 }
