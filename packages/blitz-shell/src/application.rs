@@ -13,6 +13,36 @@ use winit::platform::macos::ApplicationHandlerExtMacOS;
 
 use crate::{View, WindowConfig};
 
+thread_local! {
+    static CLOSE_VETOES: std::cell::RefCell<Vec<WindowId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep `window_id` open through the `CloseRequested` being dispatched now.
+///
+/// Call it from an embedder's window-event hook (dioxus-native's
+/// `use_window_event`), which runs before [`BlitzApplication::window_event`]
+/// on the same thread. The veto covers that one event: the shell takes it back
+/// when it sees the close, so a later close drops the window as before. On
+/// Windows an embedder can swallow `WM_CLOSE` in a subclass instead; Linux and
+/// macOS have no such seam (polyvox-vrc R-OLM.4).
+pub fn veto_close(window_id: WindowId) {
+    CLOSE_VETOES.with(|v| {
+        let mut v = v.borrow_mut();
+        if !v.contains(&window_id) {
+            v.push(window_id);
+        }
+    });
+}
+
+fn take_close_veto(window_id: WindowId) -> bool {
+    CLOSE_VETOES.with(|v| {
+        let mut v = v.borrow_mut();
+        let before = v.len();
+        v.retain(|w| *w != window_id);
+        v.len() != before
+    })
+}
+
 pub struct BlitzApplication<Rend: WindowRenderer> {
     pub windows: HashMap<WindowId, View<Rend>>,
     pub pending_windows: Vec<WindowConfig<Rend>>,
@@ -163,6 +193,11 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     ) {
         // Exit the app when window close is requested.
         if matches!(event, WindowEvent::CloseRequested) {
+            // An embedder hook that ran before this one kept the window
+            // (polyvox-vrc R-OLM.4, `veto_close`).
+            if take_close_veto(window_id) {
+                return;
+            }
             // Drop window before exiting event loop
             // See https://github.com/rust-windowing/winit/issues/4135
             let window = self.windows.remove(&window_id);

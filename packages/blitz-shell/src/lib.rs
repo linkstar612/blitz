@@ -17,7 +17,7 @@ mod window;
 #[cfg(feature = "accessibility")]
 mod accessibility;
 
-pub use crate::application::BlitzApplication;
+pub use crate::application::{BlitzApplication, veto_close};
 pub use crate::event::{BlitzShellEvent, BlitzShellProxy};
 pub use crate::window::{View, WindowConfig};
 
