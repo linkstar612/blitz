@@ -1,4 +1,5 @@
 use crate::Document;
+use crate::events::DragMode;
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, Point, PointerCoords,
     UiEvent,
@@ -338,6 +339,17 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
 
         if !event_state.is_cancelled() {
             self.run_default_action(&mut ptr_event);
+        } else if let DomEventData::PointerDown(down) = &ptr_event.data {
+            // polyvox: a press whose pointerdown default was prevented is still
+            // a press. `handle_pointerdown` (the default action) is what records
+            // where it began and clears the last drag, so a finger's moves were
+            // measured from the last unprevented press, read as a pan, and
+            // `handle_pointerup` withheld the click. Every widget that prevents
+            // pointerdown to keep focus (Polyvox's KitButton) lost all touch
+            // clicks on Android. A mouse never pans, so desktop was unaffected.
+            let mut doc = self.doc.inner_mut();
+            doc.mousedown_position = taffy::Point { x: down.page_x(), y: down.page_y() };
+            doc.drag_mode = DragMode::None;
         }
         self.process_queue();
     }

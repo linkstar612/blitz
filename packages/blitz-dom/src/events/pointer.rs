@@ -225,7 +225,12 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     if buttons.contains(MouseEventButtons::Primary) && doc.drag_mode == DragMode::None {
         let dx = x - doc.mousedown_position.x;
         let dy = y - doc.mousedown_position.y;
-        if dx.abs() > 2.0 || dy.abs() > 2.0 {
+        // polyvox: a fingertip rolls a few pixels during a tap. Android's touch
+        // slop is 8 dp (ViewConfiguration.getScaledTouchSlop) and CSS px are dp
+        // in the shell, so a finger starts a pan only past 8 px. At 2 px most
+        // real taps became pans and lost their click. Mouse and pen keep 2 px.
+        let slop = if matches!(event.id, BlitzPointerId::Finger(_)) { 8.0 } else { 2.0 };
+        if dx.abs() > slop || dy.abs() > slop {
             match event.id {
                 BlitzPointerId::Mouse | BlitzPointerId::Pen => {
                     if let Some(mousedown_node_id) = doc.mousedown_node_id {
