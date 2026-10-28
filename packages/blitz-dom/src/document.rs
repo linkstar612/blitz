@@ -1922,6 +1922,13 @@ impl BaseDocument {
     /// TODO: synthesizing pointerenter/pointerleave DOM events for
     /// hover changes caused by layout shifts.
     pub fn refresh_hover(&mut self) -> bool {
+        // polyvox R-OLR.2: a held finger keeps hover on its press target. A
+        // pan scrolls rows under a still finger, and re-resolving here moved
+        // hover to them with no `pointerenter`/`pointerleave`, so the row the
+        // finger had entered never saw its leave and stayed lit.
+        if self.touch_press.is_some() {
+            return false;
+        }
         let Some(pos) = self.last_client_pointer_position else {
             return false;
         };

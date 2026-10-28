@@ -241,7 +241,14 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     let y = event.page_y();
     let buttons = event.buttons;
 
-    let mut changed = doc.set_hover_to(x, y);
+    // polyvox R-OLR.2: a held finger does not move hover (see
+    // `EventDriver::finger_is_held`). This default action used to re-resolve
+    // it after the driver had, so hover could change with no boundary events.
+    let mut changed = if event.is_finger() && doc.touch_press.is_some() {
+        false
+    } else {
+        doc.set_hover_to(x, y)
+    };
 
     // Check if we've moved enough to be considered a selection drag (2px threshold).
     // Only the primary button selects (polyvox R-OIP.5): Blink's

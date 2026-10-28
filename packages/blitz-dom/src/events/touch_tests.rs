@@ -28,6 +28,8 @@ struct Recorder<'a> {
 thread_local! {
     /// Targets of every `pointerleave`, in order.
     static LEAVES: std::cell::RefCell<Vec<NodeId>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Targets of every `pointerenter`, in order.
+    static ENTERS: std::cell::RefCell<Vec<NodeId>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl EventHandler for Recorder<'_> {
@@ -42,6 +44,7 @@ impl EventHandler for Recorder<'_> {
             DomEventData::PointerDown(_) => event_state.prevent_default(),
             DomEventData::Click(_) => self.clicks.push(event.target),
             DomEventData::PointerLeave(_) => LEAVES.with(|l| l.borrow_mut().push(event.target)),
+            DomEventData::PointerEnter(_) => ENTERS.with(|l| l.borrow_mut().push(event.target)),
             _ => {}
         }
     }
@@ -322,19 +325,92 @@ fn the_mouse_still_clicks_the_release_target() {
 }
 
 #[test]
-fn a_finger_lift_sends_pointerleave_to_the_row_under_it() {
+fn a_finger_lift_sends_pointerleave_to_the_pressed_row() {
     // The settings rail lights a row on pointerenter and darkens it on
     // pointerleave. A silent hover clear left every row a drag ended on lit.
     let (mut doc, rows) = make_doc(false);
     let (mut clicks, mut t) = (Vec::new(), Touch::new());
-    LEAVES.with(|l| l.borrow_mut().clear());
     down(&mut doc, &mut clicks, &mut t, F1, 50.0, 10.0);
     move_to(&mut doc, &mut clicks, &t, F1, 50.0, 50.0, 0.0);
     LEAVES.with(|l| l.borrow_mut().clear());
     up(&mut doc, &mut clicks, &mut t, F1, 50.0, 50.0);
     assert_eq!(doc.get_hover_node_id(), None);
     assert!(
-        LEAVES.with(|l| l.borrow().contains(&rows[1])),
-        "the lift sent no pointerleave to the row under the finger"
+        LEAVES.with(|l| l.borrow().contains(&rows[0])),
+        "the lift sent no pointerleave to the row the finger pressed"
     );
+}
+
+/// The rows among `ids`, as indexes into `rows`.
+fn row_indexes(rows: &[NodeId], ids: &[NodeId]) -> Vec<usize> {
+    ids.iter()
+        .filter_map(|id| rows.iter().position(|row| row == id))
+        .collect()
+}
+
+/// Drags F1 from `(50, y0)` to `(50, y1)` in six moves, one layout pass after
+/// each (the pass is where hover used to move silently), and returns the rows
+/// that got `pointerenter` and `pointerleave` over the whole gesture.
+fn drag_rows(doc: &mut BaseDocument, rows: &[NodeId], y0: f32, y1: f32) -> (Vec<usize>, Vec<usize>) {
+    let (mut clicks, mut t) = (Vec::new(), Touch::new());
+    ENTERS.with(|l| l.borrow_mut().clear());
+    LEAVES.with(|l| l.borrow_mut().clear());
+    down(doc, &mut clicks, &mut t, F1, 50.0, y0);
+    doc.resolve(0.0);
+    for i in 1..=6 {
+        let y = y0 + (y1 - y0) * i as f32 / 6.0;
+        move_to(doc, &mut clicks, &t, F1, 50.0, y, 0.0);
+        doc.resolve(0.0);
+    }
+    up(doc, &mut clicks, &mut t, F1, 50.0, y1);
+    doc.resolve(0.0);
+    assert!(clicks.is_empty(), "the drag clicked {clicks:?}");
+    assert_eq!(doc.get_hover_node_id(), None, "hover outlived the lift");
+    (
+        ENTERS.with(|l| row_indexes(rows, &l.borrow())),
+        LEAVES.with(|l| row_indexes(rows, &l.borrow())),
+    )
+}
+
+#[test]
+fn a_finger_drag_that_cannot_scroll_enters_and_leaves_only_the_pressed_row() {
+    // The emulator's drag over the settings rail: the finger crosses three
+    // rows and none of them scrolls. Touch has no hover, so only the pressed
+    // row is entered, and the lift leaves it.
+    let (mut doc, rows) = make_doc(true);
+    let (entered, left) = drag_rows(&mut doc, &rows, 90.0, 10.0);
+    assert_eq!(entered, vec![2], "rows entered");
+    assert_eq!(left, vec![2], "rows left");
+}
+
+#[test]
+fn a_finger_drag_that_scrolls_enters_and_leaves_only_the_pressed_row() {
+    // Rows scroll under the still finger between moves. The layout pass used
+    // to re-resolve hover onto them with no boundary events, so the entered
+    // row never saw its leave and stayed lit.
+    let (mut doc, rows) = make_doc(false);
+    let list = doc.nodes[rows[0]].parent.expect("the list");
+    let (entered, left) = drag_rows(&mut doc, &rows, 90.0, 10.0);
+    assert!(
+        doc.nodes[list].scroll_offset().y > 40.0,
+        "the drag did not scroll the list: {:?}",
+        doc.nodes[list].scroll_offset()
+    );
+    assert_eq!(entered, vec![2], "rows entered");
+    assert_eq!(left, vec![2], "rows left");
+}
+
+#[test]
+fn mouse_hover_still_follows_the_pointer() {
+    let (mut doc, rows) = make_doc(false);
+    let (mut clicks, t) = (Vec::new(), Touch::new());
+    let mouse = BlitzPointerId::Mouse;
+    ENTERS.with(|l| l.borrow_mut().clear());
+    LEAVES.with(|l| l.borrow_mut().clear());
+    move_to(&mut doc, &mut clicks, &t, mouse, 50.0, 10.0, 0.0);
+    move_to(&mut doc, &mut clicks, &t, mouse, 50.0, 50.0, 0.0);
+    move_to(&mut doc, &mut clicks, &t, mouse, 50.0, 90.0, 0.0);
+    assert_eq!(doc.get_hover_node_id(), Some(rows[2]));
+    assert_eq!(ENTERS.with(|l| row_indexes(&rows, &l.borrow())), vec![0, 1, 2]);
+    assert_eq!(LEAVES.with(|l| row_indexes(&rows, &l.borrow())), vec![0, 1]);
 }

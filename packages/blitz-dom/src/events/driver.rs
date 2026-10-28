@@ -173,6 +173,17 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         }
     }
 
+    /// polyvox R-OLR.2: touch has no hover. While a finger is down, hover
+    /// stays on the element the first finger went down on, the way a browser
+    /// captures a touch pointer to its `pointerdown` target: no finger move,
+    /// lift or second finger moves it, so no row the finger crosses (or that
+    /// scrolls under it) gets a `pointerenter`, and the lift's `pointerleave`
+    /// reaches exactly the chain that was entered. Mouse and pen hover follow
+    /// the pointer as before.
+    fn finger_is_held(&self, event: &BlitzPointerEvent) -> bool {
+        event.is_finger() && self.doc.inner().touch_press.is_some()
+    }
+
     pub fn handle_ui_event(&mut self, event: UiEvent) {
         if let UiEvent::PointerLeave(data) = &event {
             self.handle_pointer_leave(data);
@@ -197,10 +208,21 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                         press.cancelled = true;
                     }
                 }
-                hover_node_id = self.handle_pointer_move(event);
+                if !self.finger_is_held(event) {
+                    hover_node_id = self.handle_pointer_move(event);
+                }
             }
             UiEvent::PointerDown(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                let fingers = event.active_pointers.borrow().len();
+                // polyvox R-OLR.2: a lone finger going down starts a fresh
+                // gesture, so a press whose lift never arrived cannot hold
+                // hover where it was.
+                if event.is_finger() && fingers <= 1 {
+                    self.doc.inner_mut().touch_press = None;
+                }
+                if !self.finger_is_held(event) {
+                    hover_node_id = self.handle_pointer_move(event);
+                }
                 let mut doc = self.doc.inner_mut();
                 doc.active_node();
                 doc.set_mousedown_node_id(hover_node_id);
@@ -211,7 +233,6 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                     // runs. A press that stopped one is a catch, not a tap.
                     let stopped_scroll = doc.scroll_animation != ScrollAnimationState::None;
                     doc.scroll_animation = ScrollAnimationState::None;
-                    let fingers = event.active_pointers.borrow().len();
                     match &mut doc.touch_press {
                         // A second finger: neither finger clicks.
                         Some(press) if fingers > 1 => press.cancelled = true,
@@ -230,7 +251,9 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 }
             }
             UiEvent::PointerUp(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                if !self.finger_is_held(event) {
+                    hover_node_id = self.handle_pointer_move(event);
+                }
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
 
@@ -241,7 +264,9 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 }
             }
             UiEvent::PointerCancel(event) => {
-                hover_node_id = self.handle_pointer_move(event);
+                if !self.finger_is_held(event) {
+                    hover_node_id = self.handle_pointer_move(event);
+                }
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
 
