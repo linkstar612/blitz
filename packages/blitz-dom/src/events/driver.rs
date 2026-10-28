@@ -252,9 +252,9 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
             _ => {}
         };
 
-        let finger_lifted = match &event {
+        let finger_lift = match &event {
             UiEvent::PointerUp(event) | UiEvent::PointerCancel(event) if event.is_finger() => {
-                Some(event.id)
+                Some(event.clone())
             }
             _ => None,
         };
@@ -339,15 +339,25 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         };
 
         // Update document input state (hover, focus, active, etc)
+        // polyvox R-OLR.2: a finger lift ends hover the way the pointer
+        // leaving the window does, with `pointerout`/`pointerleave`, so an
+        // element that lit itself on `pointerenter` (the settings rail's
+        // rows) goes dark again. Clearing hover silently left every row a
+        // drag ended on lit, so a scroll looked like it selected rows.
         if should_clear_hover {
-            self.doc.inner_mut().clear_hover();
+            match &finger_lift {
+                Some(lift) => self.handle_pointer_leave(lift),
+                None => {
+                    self.doc.inner_mut().clear_hover();
+                }
+            }
         }
 
         // polyvox R-OLR.2: the lifted finger's press is spent. Another finger
         // still down keeps no press, so its lift clicks nothing.
-        if let Some(id) = finger_lifted {
+        if let Some(lift) = finger_lift {
             let mut doc = self.doc.inner_mut();
-            if doc.touch_press.is_some_and(|press| press.id == id) {
+            if doc.touch_press.is_some_and(|press| press.id == lift.id) {
                 doc.touch_press = None;
             }
         }

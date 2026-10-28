@@ -25,6 +25,11 @@ struct Recorder<'a> {
     clicks: &'a mut Vec<NodeId>,
 }
 
+thread_local! {
+    /// Targets of every `pointerleave`, in order.
+    static LEAVES: std::cell::RefCell<Vec<NodeId>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
 impl EventHandler for Recorder<'_> {
     fn handle_event(
         &mut self,
@@ -36,6 +41,7 @@ impl EventHandler for Recorder<'_> {
         match event.data {
             DomEventData::PointerDown(_) => event_state.prevent_default(),
             DomEventData::Click(_) => self.clicks.push(event.target),
+            DomEventData::PointerLeave(_) => LEAVES.with(|l| l.borrow_mut().push(event.target)),
             _ => {}
         }
     }
@@ -313,4 +319,22 @@ fn the_mouse_still_clicks_the_release_target() {
         50.0,
     );
     assert_eq!(clicks, vec![rows[1]]);
+}
+
+#[test]
+fn a_finger_lift_sends_pointerleave_to_the_row_under_it() {
+    // The settings rail lights a row on pointerenter and darkens it on
+    // pointerleave. A silent hover clear left every row a drag ended on lit.
+    let (mut doc, rows) = make_doc(false);
+    let (mut clicks, mut t) = (Vec::new(), Touch::new());
+    LEAVES.with(|l| l.borrow_mut().clear());
+    down(&mut doc, &mut clicks, &mut t, F1, 50.0, 10.0);
+    move_to(&mut doc, &mut clicks, &t, F1, 50.0, 50.0, 0.0);
+    LEAVES.with(|l| l.borrow_mut().clear());
+    up(&mut doc, &mut clicks, &mut t, F1, 50.0, 50.0);
+    assert_eq!(doc.get_hover_node_id(), None);
+    assert!(
+        LEAVES.with(|l| l.borrow().contains(&rows[1])),
+        "the lift sent no pointerleave to the row under the finger"
+    );
 }
