@@ -63,6 +63,34 @@ pub(crate) enum DragMode {
     ScrollbarDrag(ScrollbarDragState),
 }
 
+/// polyvox R-OLR.2: a finger press that may still become a click.
+///
+/// A finger that scrolls never selects. The press records where it went down
+/// on SCREEN (page coordinates move under the finger while the page scrolls),
+/// and which element it went down on. Any travel past the touch slop, a second
+/// finger, or a press that stopped a running scroll animation cancels it, and
+/// `handle_pointerup` sends no click for a cancelled press or a finger with no
+/// press. Mouse and pen input never create one.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TouchPress {
+    pub(crate) id: BlitzPointerId,
+    pub(crate) screen: taffy::Point<f32>,
+    pub(crate) node: Option<NodeId>,
+    pub(crate) cancelled: bool,
+}
+
+/// Android's touch slop is 8 dp (ViewConfiguration.getScaledTouchSlop) and CSS
+/// px are dp in the shell. Mouse and pen keep the 2 px selection threshold.
+pub(crate) const FINGER_SLOP: f32 = 8.0;
+
+impl TouchPress {
+    /// Whether `event` (a move of this press's finger) left the slop square.
+    pub(crate) fn travelled(&self, event: &BlitzPointerEvent) -> bool {
+        (event.screen_x() - self.screen.x).abs() > FINGER_SLOP
+            || (event.screen_y() - self.screen.y).abs() > FINGER_SLOP
+    }
+}
+
 impl DragMode {
     pub(crate) fn take(&mut self) -> DragMode {
         std::mem::replace(self, DragMode::None)
@@ -225,12 +253,19 @@ pub(crate) fn handle_pointermove<F: FnMut(DomEvent)>(
     if buttons.contains(MouseEventButtons::Primary) && doc.drag_mode == DragMode::None {
         let dx = x - doc.mousedown_position.x;
         let dy = y - doc.mousedown_position.y;
-        // polyvox: a fingertip rolls a few pixels during a tap. Android's touch
-        // slop is 8 dp (ViewConfiguration.getScaledTouchSlop) and CSS px are dp
-        // in the shell, so a finger starts a pan only past 8 px. At 2 px most
-        // real taps became pans and lost their click. Mouse and pen keep 2 px.
-        let slop = if matches!(event.id, BlitzPointerId::Finger(_)) { 8.0 } else { 2.0 };
-        if dx.abs() > slop || dy.abs() > slop {
+        // polyvox: a fingertip rolls a few pixels during a tap, so a finger
+        // starts a pan only past the 8 px touch slop. At 2 px most real taps
+        // became pans and lost their click. Mouse and pen keep 2 px.
+        // polyvox R-OLR.2: a finger with a recorded press measures its travel
+        // on screen, so a page still moving under it cannot hide the drag.
+        let moved = match doc.touch_press {
+            Some(press) if press.id == event.id => press.travelled(event),
+            _ => {
+                let slop = if event.is_finger() { FINGER_SLOP } else { 2.0 };
+                dx.abs() > slop || dy.abs() > slop
+            }
+        };
+        if moved {
             match event.id {
                 BlitzPointerId::Mouse | BlitzPointerId::Pen => {
                     if let Some(mousedown_node_id) = doc.mousedown_node_id {
@@ -609,7 +644,25 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
 
     // Don't dispatch click if we were doing a text selection drag or panning
     // the document with a touch
-    let do_click = drag_mode == DragMode::None;
+    let mut do_click = drag_mode == DragMode::None;
+
+    // polyvox R-OLR.2: a finger clicks only when its own press is still clean,
+    // and only the element it went down on (or something inside it). A lift
+    // over a neighbor after a short roll still clicks the pressed element; a
+    // second finger, a scroll gesture or a stopped fling clicks nothing.
+    let mut click_target = target;
+    if event.is_finger() {
+        match doc.touch_press {
+            Some(press) if press.id == event.id && !press.cancelled => {
+                if let Some(pressed) = press.node
+                    && !doc.node_chain(target).contains(&pressed)
+                {
+                    click_target = pressed;
+                }
+            }
+            _ => do_click = false,
+        }
+    }
 
     // Repaint so a dragged scrollbar thumb drops its active styling, and
     // restart its fade-out delay now that the drag no longer holds it shown
@@ -632,7 +685,7 @@ pub(crate) fn handle_pointerup<F: FnMut(DomEvent)>(
 
     // Dispatch a click event
     if do_click && event.button == MouseEventButton::Main {
-        dispatch_event(DomEvent::new(target, DomEventData::Click(event.clone())));
+        dispatch_event(DomEvent::new(click_target, DomEventData::Click(event.clone())));
     }
 
     // Dispatch a context menu event

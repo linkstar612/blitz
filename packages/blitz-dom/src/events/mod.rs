@@ -3,6 +3,8 @@ mod focus;
 mod ime;
 mod keyboard;
 mod pointer;
+#[cfg(test)]
+mod touch_tests;
 
 use crate::util::Point;
 use blitz_traits::events::{DomEvent, DomEventData, MouseEventButton, PointerCoords, UiEvent};
@@ -10,7 +12,7 @@ pub use driver::{EventDriver, EventHandler, NoopEventHandler};
 use focus::generate_focus_events;
 pub(crate) use ime::handle_ime_event;
 use keyboard::{KeyboardOrTextInputEvent, handle_key_or_input_event};
-pub(crate) use pointer::DragMode;
+pub(crate) use pointer::{DragMode, TouchPress};
 use pointer::{handle_click, handle_pointerdown, handle_pointermove, handle_pointerup};
 
 use crate::{BaseDocument, events::pointer::handle_wheel};

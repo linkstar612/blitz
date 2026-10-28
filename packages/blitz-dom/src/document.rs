@@ -270,6 +270,9 @@ pub struct BaseDocument {
     pub(crate) last_mousedown_time: Option<Instant>,
     /// The position where mousedown occurred (for selection drags and double-click detection)
     pub(crate) mousedown_position: taffy::Point<f32>,
+    /// polyvox R-OLR.2: the finger press that may still become a click, kept
+    /// apart from the mouse state so a scroll gesture can veto its click.
+    pub(crate) touch_press: Option<crate::events::TouchPress>,
     /// How many clicks have been made in quick succession
     pub(crate) click_count: u16,
     /// Whether we're currently in a text selection drag (moved 2px+ from mousedown)
@@ -494,6 +497,7 @@ impl BaseDocument {
             abort_signal: config.abort_signal,
             last_mousedown_time: None,
             mousedown_position: taffy::Point::ZERO,
+            touch_press: None,
             click_count: 0,
             drag_mode: DragMode::None,
             hovered_scrollbar: None,

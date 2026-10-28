@@ -1,5 +1,6 @@
 use crate::Document;
-use crate::events::DragMode;
+use crate::events::{DragMode, TouchPress};
+use crate::scrolling::ScrollAnimationState;
 use blitz_traits::events::{
     BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, Point, PointerCoords,
     UiEvent,
@@ -187,6 +188,15 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         // Update document input state (hover, focus, active, etc)
         match &event {
             UiEvent::PointerMove(event) => {
+                if event.is_finger() {
+                    let mut doc = self.doc.inner_mut();
+                    if let Some(press) = &mut doc.touch_press
+                        && press.id == event.id
+                        && press.travelled(event)
+                    {
+                        press.cancelled = true;
+                    }
+                }
                 hover_node_id = self.handle_pointer_move(event);
             }
             UiEvent::PointerDown(event) => {
@@ -194,13 +204,39 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 let mut doc = self.doc.inner_mut();
                 doc.active_node();
                 doc.set_mousedown_node_id(hover_node_id);
+                if event.is_finger() {
+                    // polyvox R-OLR.2: a finger press stops any running scroll
+                    // animation here, before script runs, so it holds even when
+                    // pointerdown is cancelled and `handle_pointerdown` never
+                    // runs. A press that stopped one is a catch, not a tap.
+                    let stopped_scroll = doc.scroll_animation != ScrollAnimationState::None;
+                    doc.scroll_animation = ScrollAnimationState::None;
+                    let fingers = event.active_pointers.borrow().len();
+                    match &mut doc.touch_press {
+                        // A second finger: neither finger clicks.
+                        Some(press) if fingers > 1 => press.cancelled = true,
+                        _ => {
+                            doc.touch_press = Some(TouchPress {
+                                id: event.id,
+                                screen: taffy::Point {
+                                    x: event.screen_x(),
+                                    y: event.screen_y(),
+                                },
+                                node: doc.mousedown_node_id,
+                                cancelled: stopped_scroll || fingers > 1,
+                            });
+                        }
+                    }
+                }
             }
             UiEvent::PointerUp(event) => {
                 hover_node_id = self.handle_pointer_move(event);
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
 
-                if event.is_primary && matches!(event.id, BlitzPointerId::Finger(_)) {
+                // polyvox R-OLR.2: any finger lift ends hover, not only the
+                // primary one, so `:hover` never sticks to a row after a drag.
+                if matches!(event.id, BlitzPointerId::Finger(_)) {
                     should_clear_hover = true;
                 }
             }
@@ -209,11 +245,18 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
                 let mut doc = self.doc.inner_mut();
                 doc.unactive_node();
 
-                if event.is_primary && matches!(event.id, BlitzPointerId::Finger(_)) {
+                if matches!(event.id, BlitzPointerId::Finger(_)) {
                     should_clear_hover = true;
                 }
             }
             _ => {}
+        };
+
+        let finger_lifted = match &event {
+            UiEvent::PointerUp(event) | UiEvent::PointerCancel(event) if event.is_finger() => {
+                Some(event.id)
+            }
+            _ => None,
         };
 
         let target = match event {
@@ -298,6 +341,15 @@ impl<'doc, Handler: EventHandler> EventDriver<'doc, Handler> {
         // Update document input state (hover, focus, active, etc)
         if should_clear_hover {
             self.doc.inner_mut().clear_hover();
+        }
+
+        // polyvox R-OLR.2: the lifted finger's press is spent. Another finger
+        // still down keeps no press, so its lift clicks nothing.
+        if let Some(id) = finger_lifted {
+            let mut doc = self.doc.inner_mut();
+            if doc.touch_press.is_some_and(|press| press.id == id) {
+                doc.touch_press = None;
+            }
         }
     }
 
