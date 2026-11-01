@@ -5,6 +5,8 @@ mod keyboard;
 mod pointer;
 #[cfg(test)]
 mod touch_tests;
+#[cfg(test)]
+mod hit_clip_tests;
 
 use crate::util::Point;
 use blitz_traits::events::{DomEvent, DomEventData, MouseEventButton, PointerCoords, UiEvent};

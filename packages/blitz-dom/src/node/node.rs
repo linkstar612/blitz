@@ -1407,6 +1407,26 @@ impl Node {
         }
 
         let size = self.final_layout().size;
+
+        // polyvox R-OMH.1: a box that clips its overflow (a scroll container,
+        // or `overflow: hidden` / `clip`) paints none of its content outside
+        // its own border box, so none of that content takes a hit there
+        // either. The point is in scrolled content coordinates by now, and the
+        // `< 0.0` tests below then let a list scrolled down N px claim the N px
+        // strip above its top edge: a press on a toolbar drawn there went to a
+        // row scrolled out of view, and the toolbar never saw it.
+        if let Some(style) = self.primary_styles() {
+            use style::values::computed::Overflow;
+            let clips = |o: Overflow| o != Overflow::Visible;
+            let ux = x - self.scroll_offset().x as f32;
+            let uy = y - self.scroll_offset().y as f32;
+            if (clips(style.clone_overflow_x()) && (ux < 0.0 || ux > size.width))
+                || (clips(style.clone_overflow_y()) && (uy < 0.0 || uy > size.height))
+            {
+                return None;
+            }
+        }
+
         let matches_self = !(x < 0.0
             || x > size.width + self.scroll_offset().x as f32
             || y < 0.0
