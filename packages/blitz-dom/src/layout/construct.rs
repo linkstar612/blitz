@@ -1032,6 +1032,24 @@ pub(crate) fn find_inline_layout_embedded_boxes(
     }
 }
 
+/// Report the text of `node_id` and its inline descendants (pseudo elements
+/// included) to `blitz_traits::text_demand` (polyvox R-OLB.7).
+fn demand_inline_text(nodes: &crate::NodeTree, node_id: NodeId) {
+    let node = &nodes[node_id];
+    if let NodeData::Text(data) = &node.data {
+        blitz_traits::text_demand::demand(&data.content);
+        return;
+    }
+    for id in node
+        .before()
+        .into_iter()
+        .chain(node.children.iter().copied())
+        .chain(node.after())
+    {
+        demand_inline_text(nodes, id);
+    }
+}
+
 pub(crate) fn build_inline_layout_into(
     nodes: &crate::NodeTree,
     layout_ctx: &mut LayoutContext<TextBrush>,
@@ -1055,6 +1073,21 @@ pub(crate) fn build_inline_layout_into(
             white_space_collapse: WhiteSpaceCollapse::Collapse,
             ..Default::default()
         });
+
+    // polyvox R-OLB.7: parley resolves a style's family names when the style
+    // is pushed, so a face the text demand hook registers at `push_text` would
+    // be missing from every style pushed before it. Report the whole inline
+    // context's text before the first style.
+    demand_inline_text(nodes, inline_context_root_node_id);
+    if let Some(ListItemLayout {
+        marker: Marker::String(str),
+        position: ListItemLayoutPosition::Inside,
+    }) = root_node
+        .element_data()
+        .and_then(|el| el.list_item_data.as_deref())
+    {
+        blitz_traits::text_demand::demand(str);
+    }
 
     // Create a parley tree builder
     let mut builder = layout_ctx.tree_builder(font_ctx, scale, true, &parley_style);

@@ -84,6 +84,15 @@ fn node_list_item_child(
                 parley_style.font_family = font_family;
             }
 
+            let mut buf = [0u8; 4];
+            let marker_text: &str = match &marker {
+                Marker::Char(char) => char.encode_utf8(&mut buf),
+                Marker::String(str) => str,
+            };
+            // polyvox R-OLB.7: before the builder, which resolves the style's
+            // families as it takes it.
+            blitz_traits::text_demand::demand(marker_text);
+
             // Create a parley tree builder
             let mut font_ctx = doc.font_ctx.lock().unwrap();
             let mut builder = doc.layout_ctx.tree_builder(
@@ -92,19 +101,7 @@ fn node_list_item_child(
                 true,
                 &parley_style,
             );
-
-            match &marker {
-                Marker::Char(char) => {
-                    let mut buf = [0u8; 4];
-                    let marker_text = char.encode_utf8(&mut buf);
-                    blitz_traits::text_demand::demand(marker_text);
-                    builder.push_text(marker_text);
-                }
-                Marker::String(str) => {
-                    blitz_traits::text_demand::demand(str);
-                    builder.push_text(str);
-                }
-            };
+            builder.push_text(marker_text);
 
             let mut layout = builder.build().0;
             let width = layout.calculate_content_widths().max;
