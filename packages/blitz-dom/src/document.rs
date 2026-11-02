@@ -2462,6 +2462,7 @@ impl BaseDocument {
             .element_data_mut()
             .and_then(|el| el.text_input_data_mut())
         {
+            blitz_traits::text_demand::demand(text_input.editor.raw_text());
             let mut font_ctx = self.font_ctx.lock().unwrap();
             let layout_ctx = &mut self.layout_ctx;
             let driver = text_input.editor.driver(&mut font_ctx, layout_ctx);

@@ -109,6 +109,7 @@ impl TextInputData {
         text: &str,
     ) {
         if self.editor.text() != text {
+            blitz_traits::text_demand::demand(text);
             self.editor.set_text(text);
             self.editor.driver(font_ctx, layout_ctx).refresh_layout();
         }
@@ -245,6 +246,7 @@ impl TextInputData {
                     }
                     "v" => {
                         let text = shell_provider.get_clipboard_text().unwrap_or_default();
+                        blitz_traits::text_demand::demand(&text);
                         driver.insert_or_replace_selection(&text)
                     }
                     _ => unreachable!(),
@@ -371,6 +373,7 @@ impl TextInputData {
             Key::Character(s)
                 if !mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::SUPER) =>
             {
+                blitz_traits::text_demand::demand(&s);
                 driver.insert_or_replace_selection(&s);
                 return Some(GeneratedTextInputEvent::Input);
             }
@@ -790,6 +793,7 @@ impl TextInputData {
                 Some(GeneratedTextInputEvent::PreEditChange)
             }
             BlitzImeEvent::Commit(text) => {
+                blitz_traits::text_demand::demand(&text);
                 driver.insert_or_replace_selection(&text);
                 Some(GeneratedTextInputEvent::Input)
             }
@@ -797,6 +801,7 @@ impl TextInputData {
                 if text.is_empty() {
                     driver.clear_compose();
                 } else {
+                    blitz_traits::text_demand::demand(&text);
                     driver.set_compose(&text, cursor);
                 }
                 Some(GeneratedTextInputEvent::PreEditChange)

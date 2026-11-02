@@ -463,6 +463,11 @@ pub(crate) fn style(
             }
         })
         .collect();
+    // polyvox R-OLB.7: a lazily registered face named first must be registered
+    // before this style shapes anything (`blitz_traits::text_demand`).
+    if let Some(parley::FontFamilyName::Named(name)) = families.first() {
+        blitz_traits::text_demand::demand_family(name);
+    }
 
     // Wrapping and breaking
     let word_break = match itext_styles.word_break {

@@ -911,6 +911,7 @@ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multi
     editor.set_alignment(alignment);
     editor.set_base_direction(base_direction);
 
+    blitz_traits::text_demand::demand(editor.raw_text());
     editor.refresh_layout(&mut doc.font_ctx.lock().unwrap(), &mut doc.layout_ctx);
 }
 
@@ -1086,10 +1087,15 @@ pub(crate) fn build_inline_layout_into(
                 let mut marker_style = parley_style.clone();
                 marker_style.font_family = BULLET_FONT_FAMILY.into();
                 builder.push_style_span(marker_style);
-                builder.push_text(&format!("{char} "));
+                let marker_text = format!("{char} ");
+                blitz_traits::text_demand::demand(&marker_text);
+                builder.push_text(&marker_text);
                 builder.pop_style_span();
             }
-            Marker::String(str) => builder.push_text(str),
+            Marker::String(str) => {
+                blitz_traits::text_demand::demand(str);
+                builder.push_text(str);
+            }
         }
     };
     // The marker is a separate box, so words in the content don't continue from it.
@@ -1303,6 +1309,7 @@ pub(crate) fn build_inline_layout_into(
 
                 let text =
                     text_transformer.transform(&data.content, parent_text_transform, builder);
+                blitz_traits::text_demand::demand(text);
                 builder.push_text(text);
             }
             NodeData::Comment { .. } => {

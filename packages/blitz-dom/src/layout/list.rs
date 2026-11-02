@@ -96,9 +96,14 @@ fn node_list_item_child(
             match &marker {
                 Marker::Char(char) => {
                     let mut buf = [0u8; 4];
-                    builder.push_text(char.encode_utf8(&mut buf));
+                    let marker_text = char.encode_utf8(&mut buf);
+                    blitz_traits::text_demand::demand(marker_text);
+                    builder.push_text(marker_text);
                 }
-                Marker::String(str) => builder.push_text(str),
+                Marker::String(str) => {
+                    blitz_traits::text_demand::demand(str);
+                    builder.push_text(str);
+                }
             };
 
             let mut layout = builder.build().0;
