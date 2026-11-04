@@ -1689,6 +1689,35 @@ impl Node {
             .unwrap_or(crate::util::Point { x, y })
     }
 
+    /// [`absolute_position`](Self::absolute_position) summed from the
+    /// unrounded layouts: the same containing-block walk and scroll handling,
+    /// but each box contributes `unrounded_layout().location`, so the result is
+    /// the sub-pixel position a browser would place the box at. Taffy rounds
+    /// cumulatively, so the rounded walk is this value rounded (polyvox
+    /// R-OIP.15). `unrounded_layout` stays in the placing algorithm's writing
+    /// mode, so a chain with a vertical box falls back to the rounded walk.
+    pub fn absolute_position_unrounded(&self) -> crate::util::Point<f64> {
+        let mut x = 0.0f64;
+        let mut y = 0.0f64;
+        let mut current = Some(self.id);
+        while let Some(id) = current {
+            let node = self.with(id);
+            #[cfg(feature = "writing-mode")]
+            if node.layout_data().writing_mode.is_vertical() {
+                let p = self.absolute_position(0.0, 0.0);
+                return crate::util::Point {
+                    x: f64::from(p.x),
+                    y: f64::from(p.y),
+                };
+            }
+            let l = node.unrounded_layout();
+            x += f64::from(l.location.x) - node.scroll_offset().x;
+            y += f64::from(l.location.y) - node.scroll_offset().y;
+            current = node.containing_block();
+        }
+        crate::util::Point { x, y }
+    }
+
     /// Whether this node can act as an [`offset_parent`](Self::offset_parent): a positioned
     /// element, or one of the elements that always qualify (`body`, `td`, `th`).
     pub(crate) fn is_offset_parent(&self) -> bool {

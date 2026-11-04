@@ -37,6 +37,27 @@ pub(crate) struct CustomWidgetPaint {
     pub(crate) fraction: (f64, f64),
 }
 
+/// The device-pixel x (or y) of a widget's content box: the paint
+/// traversal's `initial` translate less the viewport scroll, plus the box's
+/// document position times the window scale (polyvox R-OIP.1, R-OIP.15).
+#[cfg(feature = "custom-widget")]
+fn widget_device_origin(initial: f64, viewport_scroll: f64, css_origin: f64, scale: f64) -> f64 {
+    initial - viewport_scroll * scale + css_origin * scale
+}
+
+/// The texture extent a widget paints into along one axis: the rounded box
+/// size in device pixels, one column wider when the fold shifts the content
+/// right, so the last device column the content reaches is not clipped
+/// (polyvox R-OIP.15). A fold of 0 or less keeps the old extent.
+#[cfg(feature = "custom-widget")]
+fn widget_texture_extent(device_size: f64, fraction: f64) -> u32 {
+    if fraction > 0.0 && fraction.is_finite() {
+        (device_size + fraction).ceil() as u32
+    } else {
+        device_size as u32
+    }
+}
+
 /// Pre-computed scenes for each CustomWidget, keyed by `(document id, node id)`
 type CustomWidgetSceneMap = HashMap<(usize, NodeId), CustomWidgetPaint>;
 
@@ -138,22 +159,36 @@ fn process_custom_widget_node(
     // translate, then every layout ancestor's `location * scale` less its
     // scroll offset, then `create_css_rect`'s scaled border and padding),
     // predicted here because `paint` runs before that traversal.
+    //
+    // polyvox R-OIP.15: the origin is summed from the unrounded layouts, so
+    // the remainder is the box's true sub-pixel offset from the whole pixel
+    // the traversal places it at. From the rounded layouts it was always 0 at
+    // DPR 1, and a widget drew at taffy's rounded line box (a ruby cell at
+    // x 58.000 where the browser draws 57.656).
     let viewport_scroll = doc.viewport_scroll();
     let node = doc.get_node(node_id)?;
-    let abs = node.absolute_position(0.0, 0.0);
-    let l = node.final_layout();
-    let origin_x = initial.0 - viewport_scroll.x * scale
-        + (f64::from(abs.x) + f64::from(l.border.left) + f64::from(l.padding.left)) * scale;
-    let origin_y = initial.1 - viewport_scroll.y * scale
-        + (f64::from(abs.y) + f64::from(l.border.top) + f64::from(l.padding.top)) * scale;
+    let abs = node.absolute_position_unrounded();
+    let l = node.unrounded_layout();
+    let origin_x = widget_device_origin(
+        initial.0,
+        viewport_scroll.x,
+        abs.x + f64::from(l.border.left) + f64::from(l.padding.left),
+        scale,
+    );
+    let origin_y = widget_device_origin(
+        initial.1,
+        viewport_scroll.y,
+        abs.y + f64::from(l.border.top) + f64::from(l.padding.top),
+        scale,
+    );
     let fraction = (
         split_device_origin(origin_x).1,
         split_device_origin(origin_y).1,
     );
 
     let node = doc.get_node_mut(node_id)?;
-    let width = (node.final_layout().size.width as f64 * scale) as u32;
-    let height = (node.final_layout().size.height as f64 * scale) as u32;
+    let width = widget_texture_extent(f64::from(node.final_layout().size.width) * scale, fraction.0);
+    let height = widget_texture_extent(f64::from(node.final_layout().size.height) * scale, fraction.1);
 
     if width == 0 || height == 0 {
         return None;
@@ -184,4 +219,28 @@ fn process_custom_widget_node(
         scene: widget_scene,
         fraction,
     })
+}
+
+#[cfg(all(test, feature = "custom-widget"))]
+mod widget_origin_tests {
+    use super::{widget_device_origin, widget_texture_extent};
+    use blitz_dom::node::{snapped_widget_translation, split_device_origin};
+
+    /// The research row's ruby line box: unrounded x 57.656, rounded 58.
+    /// The widget is told -0.344, composited at the traversal's whole pixel
+    /// 58, and so draws its first column at the browser's 57.656.
+    #[test]
+    fn unrounded_origin_folds_the_rounding_back_in() {
+        let origin = widget_device_origin(0.0, 0.0, 57.656, 1.0);
+        let (whole, fraction) = split_device_origin(origin);
+        assert_eq!(whole, 58.0);
+        assert!((fraction + 0.344).abs() < 1e-9, "fraction {fraction}");
+        let placed = snapped_widget_translation(58.0, fraction);
+        assert_eq!(placed, 58.0);
+        assert!((placed + fraction - 57.656).abs() < 1e-9);
+        // A left fold keeps the extent; a right fold covers the overflow.
+        assert_eq!(widget_texture_extent(430.0, fraction), 430);
+        assert_eq!(widget_texture_extent(430.0, 0.4), 431);
+        assert_eq!(widget_texture_extent(430.0, 0.0), 430);
+    }
 }
