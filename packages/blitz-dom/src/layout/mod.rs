@@ -849,14 +849,6 @@ impl RoundTree for LayoutPassState<'_> {
     }
 
     fn set_final_layout(&mut self, node_id: NodeId, layout: &Layout) {
-        // With `writing-mode` the rounding pass snaps the extent itself, from the
-        // physical unrounded layout (the stored one is in the placer's frame).
-        #[cfg(not(feature = "writing-mode"))]
-        let layout = &{
-            let mut layout = *layout;
-            snap_scroll_extent(&mut layout, self.node_from_id(node_id).unrounded_layout());
-            layout
-        };
         *self.node_from_id_mut(node_id).final_layout_mut() = *layout;
     }
 
@@ -973,79 +965,5 @@ impl Iterator for RefCellChildIter<'_> {
             self.idx += 1;
             taffy_node_id(*id)
         })
-    }
-}
-
-/// One CSS layout unit in Chromium (1/64 px): a fractional overflow within it
-/// of a whole pixel counts as that whole pixel.
-const LAYOUT_UNIT: f32 = 1.0 / 64.0;
-
-/// Snap a scroller's scrollable extent the way Chromium does (polyvox R-UIP.33).
-///
-/// Rounding the overflow edge to the nearest pixel, as `round_layout` does,
-/// loses up to half a pixel of scroll range: a 1716.5 px panel in a 659 px
-/// viewport scrolled to 1057 here and to 1058 in Chromium, so the whole last
-/// scroll page sat 1 px low. Chromium's scroll limit is the content extent
-/// rounded up, less the viewport, so an overflowing extent is ceiled from the
-/// unrounded layout. A box that does not overflow keeps its rounded extent:
-/// ceiling it could open a 1 px scroll range a browser does not have.
-pub(crate) fn snap_scroll_extent(layout: &mut Layout, unrounded: &Layout) {
-    let overflow = unrounded.scrollable_overflow_rect;
-    if unrounded.scroll_height() > LAYOUT_UNIT {
-        let bottom = (overflow.bottom - LAYOUT_UNIT).ceil();
-        layout.scrollable_overflow_rect.bottom = layout.scrollable_overflow_rect.bottom.max(bottom);
-    }
-    if unrounded.scroll_width() > LAYOUT_UNIT {
-        let right = (overflow.right - LAYOUT_UNIT).ceil();
-        layout.scrollable_overflow_rect.right = layout.scrollable_overflow_rect.right.max(right);
-    }
-}
-
-#[cfg(test)]
-mod scroll_extent_tests {
-    use super::*;
-
-    /// A scroller 659 px tall whose content ends at `bottom`, rounded the way
-    /// `round_layout` rounds it at a fractional absolute offset.
-    fn scroller(bottom: f32, rounded_bottom: f32) -> (Layout, Layout) {
-        let mut unrounded = Layout::new();
-        unrounded.size = taffy::Size {
-            width: 400.0,
-            height: 659.0,
-        };
-        unrounded.scrollable_overflow_rect.right = 400.0;
-        unrounded.scrollable_overflow_rect.bottom = bottom;
-        let mut rounded = unrounded;
-        rounded.scrollable_overflow_rect.bottom = rounded_bottom;
-        (rounded, unrounded)
-    }
-
-    #[test]
-    fn a_half_pixel_content_height_scrolls_to_the_next_whole_pixel() {
-        // The settings panel: 1716.5 px of content rounded down to 1716.
-        let (mut layout, unrounded) = scroller(1716.5, 1716.0);
-        assert_eq!(layout.scroll_height(), 1057.0);
-        snap_scroll_extent(&mut layout, &unrounded);
-        assert_eq!(layout.scrollable_overflow_rect.bottom, 1717.0);
-        assert_eq!(layout.scroll_height(), 1058.0);
-    }
-
-    #[test]
-    fn a_whole_pixel_extent_and_float_noise_stay_put() {
-        let (mut layout, unrounded) = scroller(1716.0, 1716.0);
-        snap_scroll_extent(&mut layout, &unrounded);
-        assert_eq!(layout.scroll_height(), 1057.0);
-        let (mut layout, unrounded) = scroller(1716.001, 1716.0);
-        snap_scroll_extent(&mut layout, &unrounded);
-        assert_eq!(layout.scroll_height(), 1057.0);
-    }
-
-    #[test]
-    fn a_box_that_does_not_overflow_gains_no_scroll_range() {
-        let (mut layout, unrounded) = scroller(658.6, 658.0);
-        snap_scroll_extent(&mut layout, &unrounded);
-        assert_eq!(layout.scrollable_overflow_rect.bottom, 658.0);
-        assert_eq!(layout.scroll_height(), 0.0);
-        assert_eq!(layout.scroll_width(), 0.0);
     }
 }
