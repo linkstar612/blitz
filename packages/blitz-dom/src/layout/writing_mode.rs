@@ -272,6 +272,7 @@ impl LayoutPassState<'_> {
 
         // `unrounded_layout` is left in the placer's writing mode: Taffy's cache may skip re-placing
         // this node on a later layout, and only `final_layout` is read downstream.
+        super::snap_scroll_extent(&mut layout, &unrounded);
         self.set_final_layout(node_id, &layout);
 
         let wm = self.layout_wm_of(dom_node_id(node_id));
