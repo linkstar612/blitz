@@ -43,6 +43,22 @@ pub const STEM_DARKEN_Y_RATIO: f64 = 0.8;
 /// Whether stem darkening applies on this platform.
 pub const STEM_DARKEN_ENABLED: bool = cfg!(target_os = "windows");
 
+/// Environment switch for the run-origin snap (polyvox R-OCZ.9.1): `0`, `off`
+/// or `false` leaves every glyph run at its layout fraction, the way Chromium
+/// does, for an embedder whose glyph renderer quantizes glyph x into subpixel
+/// positions itself (a glyph atlas with four x buckets per pixel, as Skia
+/// uses). Anything else, or unset: the snap stays on where hinting is on.
+/// Vertical placement is not affected: glifo's baseline row snap stays.
+pub const SNAP_RUN_ORIGIN_ENV: &str = "BLITZ_TEXT_SNAP_RUN_ORIGIN";
+
+/// Whether [`SNAP_RUN_ORIGIN_ENV`]'s value keeps the run-origin snap on.
+pub fn snap_run_origin_from_env(value: Option<&str>) -> bool {
+    !matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("0" | "off" | "false")
+    )
+}
+
 /// Where a snapped run origin lands inside its device column: just past the
 /// column's left edge, not on it. glifo floors the glyph's device x to pick the
 /// column and quantizes the remainder into subpixel buckets, clamping anything
@@ -53,7 +69,7 @@ pub const STEM_DARKEN_ENABLED: bool = cfg!(target_os = "windows");
 pub const SNAP_BIAS_PX: f64 = 1.0 / 1024.0;
 
 /// The text raster settings one platform uses. Every renderer reads the same
-/// value from [`TextRaster::get`].
+/// value from [`TextRaster::get`], which also applies [`SNAP_RUN_ORIGIN_ENV`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextRaster {
     /// Vertical hinting on.
@@ -72,7 +88,12 @@ impl TextRaster {
     pub fn get() -> TextRaster {
         static RASTER: OnceLock<TextRaster> = OnceLock::new();
         *RASTER.get_or_init(|| {
-            TextRaster::resolve(STEM_DARKEN_ENABLED, std::env::var(STEM_DARKEN_ENV).ok().as_deref())
+            let r = TextRaster::resolve(STEM_DARKEN_ENABLED, std::env::var(STEM_DARKEN_ENV).ok().as_deref());
+            TextRaster {
+                snap_run_origin: r.snap_run_origin
+                    && snap_run_origin_from_env(std::env::var(SNAP_RUN_ORIGIN_ENV).ok().as_deref()),
+                ..r
+            }
         })
     }
 
@@ -130,6 +151,17 @@ mod tests {
         let r = TextRaster::resolve(true, None);
         assert!(r.hint && r.snap_run_origin);
         assert_eq!(r.stem_darken(), (0.20, 0.20 * 0.8));
+    }
+
+    #[test]
+    fn snap_env_turns_the_run_origin_snap_off_only_when_asked() {
+        assert!(snap_run_origin_from_env(None));
+        assert!(snap_run_origin_from_env(Some("1")));
+        assert!(snap_run_origin_from_env(Some("on")));
+        assert!(snap_run_origin_from_env(Some("")));
+        assert!(!snap_run_origin_from_env(Some("0")));
+        assert!(!snap_run_origin_from_env(Some(" OFF ")));
+        assert!(!snap_run_origin_from_env(Some("false")));
     }
 
     #[test]
