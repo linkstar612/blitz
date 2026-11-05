@@ -50,6 +50,18 @@ pub(crate) static FONT_DB: LazyLock<Arc<fontdb::Database>> = LazyLock::new(|| {
     Arc::new(db)
 });
 
+/// POLYVOX PATCH (R-OJF.2): load the system font database SVG images use, now.
+///
+/// [`FONT_DB`] loads every system font the first time an SVG is parsed, which
+/// is the first layout that holds an inline `<svg>`: on the UI thread, 160 to
+/// 360 ms of the Polyvox shell's boot stall. An embedder calls this from a
+/// thread at startup; a layout that gets there first waits only for the rest of
+/// the load. A no-op without the `svg` feature.
+pub fn prewarm_svg_font_db() {
+    #[cfg(feature = "svg")]
+    LazyLock::force(&FONT_DB);
+}
+
 /// Which kind of CSS image layer list (`background-image` or `mask-image`) to
 /// flush from style to dedicated storage on the node.
 #[derive(Clone, Copy, Debug)]
