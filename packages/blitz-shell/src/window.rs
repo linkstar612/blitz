@@ -559,7 +559,6 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         let (width, height) = inner.viewport().window_size;
         let scale = inner.viewport().scale_f64();
-        let is_animating = inner.is_animating();
         let is_blocked = inner.has_pending_critical_resources();
         let insets = self.safe_area_insets;
         let painted = !is_blocked && is_visible && self.renderer.is_active();
@@ -587,6 +586,16 @@ impl<Rend: WindowRenderer> View<Rend> {
                 )
             });
         }
+
+        // Sampled after the paint, not before it (polyvox-vrc R-OMR.1). A
+        // custom widget's `paint` runs inside `render` above, and it can be
+        // what starts the widget's need for another frame: a settings line
+        // preview whose font parse has not landed, or whose turn in the
+        // frame's first-paint budget has not come, draws nothing and answers
+        // `requires_redraw` with true from then on. Read before the paint,
+        // that frame saw false and asked for no next one, so the preview
+        // stayed blank until unrelated input (a wheel notch) painted again.
+        let is_animating = inner.is_animating();
 
         drop(inner);
 
