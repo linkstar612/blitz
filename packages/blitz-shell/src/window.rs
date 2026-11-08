@@ -46,6 +46,7 @@ pub struct WindowConfig<Rend: WindowRenderer> {
     pub(crate) attributes: WindowAttributes,
     renderer: Rend,
     defer_renderer: bool,
+    paint_first: bool,
 }
 
 impl<Rend: WindowRenderer> WindowConfig<Rend> {
@@ -63,6 +64,7 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
             attributes,
             renderer,
             defer_renderer: false,
+            paint_first: false,
         }
     }
 
@@ -74,6 +76,19 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
     /// visible one would reveal nothing, since its first frame never comes.
     pub fn with_deferred_renderer(mut self, defer: bool) -> Self {
         self.defer_renderer = defer;
+        self
+    }
+
+    /// Paint this window inside the poll that finds its document changed,
+    /// ahead of the other windows' polls in the same wake, instead of waiting
+    /// for its `RedrawRequested` (polyvox-vrc R-OMQ.13). All windows share one
+    /// event loop, so a window that waits for its paint message also waits for
+    /// every other window's layout, paint and present queued before it: a
+    /// desktop overlay painted a new line in about 11 ms with the main window
+    /// shown against 2.3 ms with it hidden. What either window draws is
+    /// unchanged; only the order of the frames is.
+    pub fn with_paint_first(mut self, paint_first: bool) -> Self {
+        self.paint_first = paint_first;
         self
     }
 }
@@ -131,6 +146,8 @@ pub struct View<Rend: WindowRenderer> {
     /// nothing until the next present, so it is applied right before `render`
     /// instead of inside the resize event that produced it.
     surface_size_dirty: bool,
+    /// [`WindowConfig::with_paint_first`].
+    paint_first: bool,
 
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
@@ -267,6 +284,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             doc_polled: false,
             defer_first_resume,
             surface_size_dirty: false,
+            paint_first: config.paint_first,
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -524,6 +542,10 @@ impl<Rend: WindowRenderer> View<Rend> {
                     // the first frame with the document in it, and the
                     // reveal happens off it.
                     self.redraw();
+                } else if self.paints_now_on_poll() {
+                    // polyvox-vrc R-OMQ.13: the frame goes out now, not after
+                    // the other windows' paint messages.
+                    self.redraw();
                 } else {
                     self.request_redraw();
                 }
@@ -532,6 +554,19 @@ impl<Rend: WindowRenderer> View<Rend> {
         }
 
         false
+    }
+
+    /// Whether this window was asked to paint first
+    /// ([`WindowConfig::with_paint_first`]).
+    pub fn paints_first(&self) -> bool {
+        self.paint_first
+    }
+
+    /// A paint-first window paints inside its poll only when that frame can
+    /// reach the screen: shown and with a live renderer. Otherwise it takes
+    /// the ordinary `request_redraw` path, which is a no-op without a renderer.
+    fn paints_now_on_poll(&self) -> bool {
+        self.paint_first && self.is_visible && self.renderer.is_active()
     }
 
     pub fn request_redraw(&self) {

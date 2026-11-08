@@ -43,6 +43,28 @@ fn take_close_veto(window_id: WindowId) -> bool {
     })
 }
 
+/// Move the `Poll`s of windows that do not paint first behind the rest of
+/// `batch`, when `batch` polls at least one window that does
+/// (polyvox-vrc R-OMQ.13, see [`BlitzApplication::take_event_batch`]).
+/// Stable on both sides; a batch with no paint-first poll is left as it is.
+pub fn order_paint_first(
+    batch: &mut Vec<BlitzShellEvent>,
+    paints_first: impl Fn(&WindowId) -> bool,
+) {
+    let other_poll = |e: &BlitzShellEvent| {
+        matches!(e, BlitzShellEvent::Poll { window_id } if !paints_first(window_id))
+    };
+    let has_first = batch
+        .iter()
+        .any(|e| matches!(e, BlitzShellEvent::Poll { window_id } if paints_first(window_id)));
+    if !has_first || !batch.iter().any(other_poll) {
+        return;
+    }
+    let (later, mut now): (Vec<_>, Vec<_>) = batch.drain(..).partition(other_poll);
+    now.extend(later);
+    *batch = now;
+}
+
 pub struct BlitzApplication<Rend: WindowRenderer> {
     pub windows: HashMap<WindowId, View<Rend>>,
     pub pending_windows: Vec<WindowConfig<Rend>>,
@@ -62,6 +84,22 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
 
     pub fn add_window(&mut self, window_config: WindowConfig<Rend>) {
         self.pending_windows.push(window_config);
+    }
+
+    /// Take every queued shell event, in the order one wake handles them
+    /// (polyvox-vrc R-OMQ.13). When the batch holds a `Poll` for a window
+    /// built [`with_paint_first`](crate::WindowConfig::with_paint_first), the
+    /// other windows' `Poll`s move to the end of the batch, so that window's
+    /// poll, and the paint it does inside it, run before their document work.
+    /// A `Poll` only drains work already queued for its document, so running
+    /// one later in the same wake changes no result. Everything else keeps
+    /// its order. Empty once the queue is drained.
+    pub fn take_event_batch(&self) -> Vec<BlitzShellEvent> {
+        let mut batch: Vec<BlitzShellEvent> = self.event_queue.try_iter().collect();
+        order_paint_first(&mut batch, |id| {
+            self.windows.get(id).is_some_and(View::paints_first)
+        });
+        batch
     }
 
     fn window_mut_by_doc_id(&mut self, doc_id: usize) -> Option<&mut View<Rend>> {
@@ -215,8 +253,14 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        while let Ok(event) = self.event_queue.try_recv() {
-            self.handle_blitz_shell_event(event_loop, event);
+        loop {
+            let batch = self.take_event_batch();
+            if batch.is_empty() {
+                break;
+            }
+            for event in batch {
+                self.handle_blitz_shell_event(event_loop, event);
+            }
         }
     }
 
