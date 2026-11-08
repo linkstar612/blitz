@@ -147,6 +147,26 @@ pub(crate) fn next_animation_frame(
     (due > now + ANIMATION_FRAME_SLACK).then_some(due)
 }
 
+/// What the next animation frame is timed from: the due time of the deferred
+/// frame this one answers, when it started within a period of it, so the timer
+/// wake's own delay does not stretch every interval past the display period
+/// (a 360 Hz display drew about 330 frames a second when timed from each
+/// frame's start); else the frame's start.
+pub(crate) fn pacing_anchor(
+    frame_start: Instant,
+    fired_due: Option<Instant>,
+    period: Option<std::time::Duration>,
+) -> Instant {
+    match (fired_due, period) {
+        (Some(due), Some(period))
+            if frame_start >= due && frame_start.duration_since(due) < period =>
+        {
+            due
+        }
+        _ => frame_start,
+    }
+}
+
 pub struct View<Rend: WindowRenderer> {
     pub doc: Box<dyn Document>,
 
@@ -220,6 +240,9 @@ pub struct View<Rend: WindowRenderer> {
     /// refresh ([`next_animation_frame`]); the event loop asks for it in
     /// `about_to_wait` once due. Any frame that paints first clears it.
     anim_frame_due: Option<Instant>,
+    /// The due time of the deferred animation frame last asked for, which the
+    /// next `redraw` times its successor from ([`pacing_anchor`]).
+    anim_frame_fired: Option<Instant>,
     /// This window's display refresh period and when it was read.
     frame_period: Option<(Instant, Option<std::time::Duration>)>,
 
@@ -369,6 +392,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             redraw_asked,
             last_frame_settled: false,
             anim_frame_due: None,
+            anim_frame_fired: None,
             frame_period: None,
             #[cfg(feature = "accessibility")]
             accessibility,
@@ -694,6 +718,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.paint_owed = false;
         let frame_start = Instant::now();
         self.anim_frame_due = None;
+        let fired_due = self.anim_frame_fired.take();
         let animation_time = self.current_animation_time();
         let is_visible = self.is_visible;
 
@@ -754,7 +779,7 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         self.last_frame_settled = painted && !is_animating && !self.surface_size_dirty;
         if !is_blocked && is_visible && is_animating {
-            self.request_animation_frame(frame_start);
+            self.request_animation_frame(frame_start, fired_due);
         }
     }
 
@@ -779,13 +804,14 @@ impl<Rend: WindowRenderer> View<Rend> {
 
     /// Ask for an animation's next frame, one display period after the frame
     /// that started at `frame_start` (polyvox-vrc R-OMQ.1).
-    fn request_animation_frame(&mut self, frame_start: Instant) {
+    fn request_animation_frame(&mut self, frame_start: Instant, fired_due: Option<Instant>) {
         let period = if frame_pacing_enabled() {
             self.display_period()
         } else {
             None
         };
-        match next_animation_frame(frame_start, Instant::now(), period) {
+        let anchor = pacing_anchor(frame_start, fired_due, period);
+        match next_animation_frame(anchor, Instant::now(), period) {
             None => self.request_redraw(),
             Some(due) => self.anim_frame_due = Some(due),
         }
@@ -799,6 +825,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             return Some(due);
         }
         self.anim_frame_due = None;
+        self.anim_frame_fired = Some(due);
         self.request_redraw();
         None
     }
@@ -1256,7 +1283,7 @@ impl<Rend: WindowRenderer> View<Rend> {
 
 #[cfg(test)]
 mod frame_pacing_tests {
-    use super::{next_animation_frame, refresh_period};
+    use super::{next_animation_frame, pacing_anchor, refresh_period};
     use std::time::Duration;
     use web_time::Instant;
 
@@ -1297,5 +1324,21 @@ mod frame_pacing_tests {
             None
         );
         assert_eq!(next_animation_frame(start, start, None), None);
+    }
+
+    #[test]
+    fn a_paced_frame_times_its_successor_from_its_due_time_not_its_late_start() {
+        let due = Instant::now();
+        let period = Some(Duration::from_micros(2778));
+        // The timer woke 0.3 ms late: the next frame is still due one period
+        // after the last due time, so the cadence holds the display rate.
+        let late_start = due + Duration::from_micros(300);
+        assert_eq!(pacing_anchor(late_start, Some(due), period), due);
+        // A frame that started a full period or more after it (the loop was
+        // busy), or one no deferred frame asked for, times from its start.
+        let much_later = due + Duration::from_millis(5);
+        assert_eq!(pacing_anchor(much_later, Some(due), period), much_later);
+        assert_eq!(pacing_anchor(late_start, None, period), late_start);
+        assert_eq!(pacing_anchor(late_start, Some(due), None), late_start);
     }
 }
