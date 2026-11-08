@@ -317,22 +317,14 @@ impl ApplicationHandler for DioxusNativeApplication {
     }
 
     fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
-        // Batched so a paint-first window's poll runs ahead of the others'
-        // (polyvox-vrc R-OMQ.13, `BlitzApplication::take_event_batch`).
-        loop {
-            let batch = self.inner.take_event_batch();
-            if batch.is_empty() {
-                break;
-            }
-            for event in batch {
-                match event {
-                    BlitzShellEvent::Embedder(event) => {
-                        if let Some(event) = event.downcast_ref::<DioxusNativeEvent>() {
-                            self.handle_dioxus_native_event(event_loop, event);
-                        }
+        while let Ok(event) = self.inner.event_queue.try_recv() {
+            match event {
+                BlitzShellEvent::Embedder(event) => {
+                    if let Some(event) = event.downcast_ref::<DioxusNativeEvent>() {
+                        self.handle_dioxus_native_event(event_loop, event);
                     }
-                    event => self.inner.handle_blitz_shell_event(event_loop, event),
                 }
+                event => self.inner.handle_blitz_shell_event(event_loop, event),
             }
         }
     }

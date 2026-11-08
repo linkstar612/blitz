@@ -79,14 +79,16 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
         self
     }
 
-    /// Paint this window inside the poll that finds its document changed,
-    /// ahead of the other windows' polls in the same wake, instead of waiting
-    /// for its `RedrawRequested` (polyvox-vrc R-OMQ.13). All windows share one
-    /// event loop, so a window that waits for its paint message also waits for
-    /// every other window's layout, paint and present queued before it: a
-    /// desktop overlay painted a new line in about 11 ms with the main window
-    /// shown against 2.3 ms with it hidden. What either window draws is
-    /// unchanged; only the order of the frames is.
+    /// Paint this window's changed document right after the next frame any
+    /// other window paints, instead of waiting for its own `RedrawRequested`
+    /// (polyvox-vrc R-OMQ.13). All windows share one event loop and Windows
+    /// hands out paint messages in its own order: a desktop overlay waited
+    /// behind both frames the main window painted for a new line (about 11 ms
+    /// shown against 2.3 ms with the main window hidden), though the line was
+    /// already in the first. The other window's first frame still goes first,
+    /// and the window's own paint request stays as the fallback when no other
+    /// window paints. What either window draws is unchanged; only the order of
+    /// the frames is.
     pub fn with_paint_first(mut self, paint_first: bool) -> Self {
         self.paint_first = paint_first;
         self
@@ -148,6 +150,8 @@ pub struct View<Rend: WindowRenderer> {
     surface_size_dirty: bool,
     /// [`WindowConfig::with_paint_first`].
     paint_first: bool,
+    /// A paint-first window polled a change it has not painted yet.
+    paint_owed: bool,
 
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
@@ -285,6 +289,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             defer_first_resume,
             surface_size_dirty: false,
             paint_first: config.paint_first,
+            paint_owed: false,
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -542,11 +547,13 @@ impl<Rend: WindowRenderer> View<Rend> {
                     // the first frame with the document in it, and the
                     // reveal happens off it.
                     self.redraw();
-                } else if self.paints_now_on_poll() {
-                    // polyvox-vrc R-OMQ.13: the frame goes out now, not after
-                    // the other windows' paint messages.
-                    self.redraw();
                 } else {
+                    // polyvox-vrc R-OMQ.13: owed to the next frame of another
+                    // window (`take_paint_owed`), with this request as the
+                    // fallback when no other window paints.
+                    if self.paint_first {
+                        self.paint_owed = true;
+                    }
                     self.request_redraw();
                 }
                 return true;
@@ -562,11 +569,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.paint_first
     }
 
-    /// A paint-first window paints inside its poll only when that frame can
-    /// reach the screen: shown and with a live renderer. Otherwise it takes
-    /// the ordinary `request_redraw` path, which is a no-op without a renderer.
-    fn paints_now_on_poll(&self) -> bool {
-        self.paint_first && self.is_visible && self.renderer.is_active()
+    /// Whether a paint-first window has a changed document it has not painted
+    /// yet, and can paint it now (shown, with a live renderer). Clears the
+    /// flag; the caller paints with [`redraw`](Self::redraw).
+    pub fn take_paint_owed(&mut self) -> bool {
+        let owed = std::mem::take(&mut self.paint_owed);
+        owed && self.is_visible && self.renderer.is_active()
     }
 
     pub fn request_redraw(&self) {
@@ -580,6 +588,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     pub fn redraw(&mut self) {
         #[cfg(target_os = "ios")]
         self.ios_request_redraw.set(false);
+        self.paint_owed = false;
         let animation_time = self.current_animation_time();
         let is_visible = self.is_visible;
 
