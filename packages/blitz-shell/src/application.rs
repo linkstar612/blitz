@@ -239,9 +239,15 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         Some(self)
     }
 
-    #[cfg(target_os = "ios")]
     fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
         for view in self.windows.values_mut() {
+            // polyvox-vrc R-OMQ.13: a paint-first window's owed frame, when
+            // no other window painted since its poll. Every queued message,
+            // paint messages included, has been handled by now.
+            if view.paints_first() && view.take_paint_owed() {
+                view.redraw();
+            }
+            #[cfg(target_os = "ios")]
             if view.ios_request_redraw.get() {
                 view.window.request_redraw();
             }

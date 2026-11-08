@@ -86,8 +86,8 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
     /// behind both frames the main window painted for a new line (about 11 ms
     /// shown against 2.3 ms with the main window hidden), though the line was
     /// already in the first. The other window's first frame still goes first,
-    /// and the window's own paint request stays as the fallback when no other
-    /// window paints. What either window draws is unchanged; only the order of
+    /// and the event loop's `about_to_wait` paints it when no other window
+    /// paints. What either window draws is unchanged; only the order of
     /// the frames is.
     pub fn with_paint_first(mut self, paint_first: bool) -> Self {
         self.paint_first = paint_first;
@@ -547,13 +547,13 @@ impl<Rend: WindowRenderer> View<Rend> {
                     // the first frame with the document in it, and the
                     // reveal happens off it.
                     self.redraw();
+                } else if self.paint_first {
+                    // polyvox-vrc R-OMQ.13: owed to the next frame another
+                    // window paints, or to the loop's next `about_to_wait`
+                    // when none does (`BlitzApplication`), instead of a paint
+                    // message Windows may deliver behind the other window's.
+                    self.paint_owed = true;
                 } else {
-                    // polyvox-vrc R-OMQ.13: owed to the next frame of another
-                    // window (`take_paint_owed`), with this request as the
-                    // fallback when no other window paints.
-                    if self.paint_first {
-                        self.paint_owed = true;
-                    }
                     self.request_redraw();
                 }
                 return true;
