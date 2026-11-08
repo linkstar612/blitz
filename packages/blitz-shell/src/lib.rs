@@ -87,15 +87,34 @@ pub fn current_android_app() -> android_activity::AndroidApp {
 pub struct BlitzShellProvider {
     window: Arc<dyn Window>,
     proxy: BlitzShellProxy,
+    /// polyvox-vrc R-OMQ.13: set by every frame request, so a paint-first
+    /// window never skips a paint message the document asked for.
+    redraw_asked: Arc<std::sync::atomic::AtomicBool>,
 }
 impl BlitzShellProvider {
     pub fn new(window: Arc<dyn Window>, proxy: BlitzShellProxy) -> Self {
-        Self { window, proxy }
+        Self::with_redraw_flag(window, proxy, Arc::default())
+    }
+
+    /// [`new`](Self::new), sharing the flag a frame request sets with the
+    /// window's [`View`](crate::View) (polyvox-vrc R-OMQ.13).
+    pub(crate) fn with_redraw_flag(
+        window: Arc<dyn Window>,
+        proxy: BlitzShellProxy,
+        redraw_asked: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        Self {
+            window,
+            proxy,
+            redraw_asked,
+        }
     }
 }
 
 impl ShellProvider for BlitzShellProvider {
     fn request_redraw(&self) {
+        self.redraw_asked
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         self.window.request_redraw();
     }
     fn set_cursor(&self, icon: Option<CursorIcon>) {

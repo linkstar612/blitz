@@ -95,6 +95,12 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
     }
 }
 
+/// polyvox-vrc R-OMQ.13: how long after a paint-first window painted its owed
+/// frame early its own paint message counts as the repeat of that frame. The
+/// message trails the other window's frames by a few milliseconds; a later one
+/// is not that message and always paints.
+const OWED_PAINT_SKIP_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
+
 pub struct View<Rend: WindowRenderer> {
     pub doc: Box<dyn Document>,
 
@@ -152,6 +158,18 @@ pub struct View<Rend: WindowRenderer> {
     paint_first: bool,
     /// A paint-first window polled a change it has not painted yet.
     paint_owed: bool,
+    /// When a paint-first window painted its owed frame ahead of its own
+    /// paint message (`paint_owed_now`), with nothing left to draw. The
+    /// paint message the poll asked for is then a copy of that frame, and
+    /// the next `RedrawRequested` within [`OWED_PAINT_SKIP_WINDOW`] skips it
+    /// unless anything asked for a frame since.
+    owed_paint_done_at: Option<Instant>,
+    /// Set by every frame request, this view's and the document's
+    /// (`BlitzShellProvider`): a paint message that carries one of those is
+    /// never skipped.
+    redraw_asked: Arc<std::sync::atomic::AtomicBool>,
+    /// The last `redraw` presented a frame and asked for no next one.
+    last_frame_settled: bool,
 
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
@@ -243,7 +261,12 @@ impl<Rend: WindowRenderer> View<Rend> {
         let viewport = Viewport::new(viewport_width, viewport_height, scale, color_scheme);
 
         // Create shell provider
-        let shell_provider = BlitzShellProvider::new(winit_window.clone(), proxy.clone());
+        let redraw_asked = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shell_provider = BlitzShellProvider::with_redraw_flag(
+            winit_window.clone(),
+            proxy.clone(),
+            Arc::clone(&redraw_asked),
+        );
 
         let defer_first_resume = config.defer_renderer;
         let mut doc = config.doc;
@@ -290,6 +313,9 @@ impl<Rend: WindowRenderer> View<Rend> {
             surface_size_dirty: false,
             paint_first: config.paint_first,
             paint_owed: false,
+            owed_paint_done_at: None,
+            redraw_asked,
+            last_frame_settled: false,
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -390,6 +416,10 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// [`BlitzShellEvent::ResumeReady`] event. Paints the first frame and
     /// installs the doc poll waker. Returns `true` if the renderer is now active.
     pub fn complete_resume(&mut self) -> bool {
+        // polyvox-vrc R-OMQ.13: a renderer wake (a frame retried after the
+        // GPU was busy, a readback shown, a rebuild) may post the paint
+        // message a skip would eat. Ahead of the check: a retry answers false.
+        self.owed_paint_done_at = None;
         if !self.renderer.complete_resume() {
             return false;
         }
@@ -577,8 +607,27 @@ impl<Rend: WindowRenderer> View<Rend> {
         owed && self.is_visible && self.renderer.is_active()
     }
 
+    /// Paint a paint-first window's owed frame now, ahead of the paint
+    /// message its poll asked for (polyvox-vrc R-OMQ.13). When the frame
+    /// presented with nothing left to draw, that message only repeats it, so
+    /// the next `RedrawRequested` skips it unless anything asked for a frame
+    /// in between: the document, an event, or the renderer retrying a frame
+    /// the GPU was too busy for (its wake comes through `complete_resume`).
+    pub fn paint_owed_now(&mut self) {
+        // The poll's own request is the one this frame answers. One made
+        // while it paints (a widget wanting another frame) stays set.
+        self.redraw_asked
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.redraw();
+        if self.last_frame_settled {
+            self.owed_paint_done_at = Some(Instant::now());
+        }
+    }
+
     pub fn request_redraw(&self) {
         if self.renderer.is_active() {
+            self.redraw_asked
+                .store(true, std::sync::atomic::Ordering::Relaxed);
             self.window.request_redraw();
             #[cfg(target_os = "ios")]
             self.ios_request_redraw.set(true);
@@ -647,6 +696,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             self.reveal_after_frame();
         }
 
+        self.last_frame_settled = painted && !is_animating && !self.surface_size_dirty;
         if !is_blocked && is_visible && is_animating {
             self.request_redraw();
         }
@@ -809,7 +859,20 @@ impl<Rend: WindowRenderer> View<Rend> {
                 // Currently handled at the level above in application.rs
             }
             WindowEvent::RedrawRequested => {
-                self.redraw();
+                // polyvox-vrc R-OMQ.13: the paint message after an owed frame
+                // that already went out (`paint_owed_now`).
+                let done_at = self.owed_paint_done_at.take();
+                let asked = self
+                    .redraw_asked
+                    .swap(false, std::sync::atomic::Ordering::Relaxed);
+                let repeat = done_at.is_some_and(|at| at.elapsed() < OWED_PAINT_SKIP_WINDOW)
+                    && !asked
+                    && !self.paint_owed
+                    && !self.surface_size_dirty
+                    && !self.reveal_pending;
+                if !repeat {
+                    self.redraw();
+                }
             }
             WindowEvent::Moved(_) => {}
             WindowEvent::Occluded(is_occluded) => {

@@ -221,7 +221,7 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         if painted_other {
             for view in self.windows.values_mut() {
                 if view.paints_first() && view.take_paint_owed() {
-                    view.redraw();
+                    view.paint_owed_now();
                 }
             }
         }
