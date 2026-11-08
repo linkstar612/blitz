@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::Receiver;
 use winit::application::ApplicationHandler;
 use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
+use winit::event_loop::{ActiveEventLoop, ControlFlow};
 use winit::window::WindowId;
 
 #[cfg(target_os = "macos")]
@@ -239,13 +239,26 @@ impl<Rend: WindowRenderer> ApplicationHandler for BlitzApplication<Rend> {
         Some(self)
     }
 
-    #[cfg(target_os = "ios")]
-    fn about_to_wait(&mut self, _event_loop: &dyn ActiveEventLoop) {
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        #[cfg(target_os = "ios")]
         for view in self.windows.values_mut() {
             if view.ios_request_redraw.get() {
                 view.window.request_redraw();
             }
         }
+        // polyvox-vrc R-OMQ.1: animation frames paced to the display. A due
+        // one is asked for now; the loop wakes for the next one still waiting.
+        let now = web_time::Instant::now();
+        let mut next: Option<web_time::Instant> = None;
+        for view in self.windows.values_mut() {
+            if let Some(due) = view.fire_due_animation_frame(now) {
+                next = Some(next.map_or(due, |n| n.min(due)));
+            }
+        }
+        event_loop.set_control_flow(match next {
+            Some(due) => ControlFlow::WaitUntil(due),
+            None => ControlFlow::Wait,
+        });
     }
 }
 

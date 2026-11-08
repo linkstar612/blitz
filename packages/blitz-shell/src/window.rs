@@ -101,6 +101,52 @@ impl<Rend: WindowRenderer> WindowConfig<Rend> {
 /// is not that message and always paints.
 const OWED_PAINT_SKIP_WINDOW: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// polyvox-vrc R-OMQ.1: an animation's next frame (smooth scroll, the overlay
+/// scrollbar fade, a CSS animation, a custom widget asking for frames) waits
+/// for the display's next refresh instead of being asked for the moment the
+/// last one presented. The renderer's present does not block on vsync here,
+/// so a scroll animation presented about 590 frames a second on a 360 Hz
+/// display: work on a GPU VRChat shares, for frames nobody sees. Frames an
+/// event or a document change asks for are not paced and paint at once.
+///
+/// `POLYVOX_FRAME_PACING=0` turns it off (A/B and diagnosis only).
+fn frame_pacing_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("POLYVOX_FRAME_PACING").map_or(true, |v| v != "0" && v != "off")
+    })
+}
+
+/// How often a window re-reads its monitor's refresh rate (it can move to
+/// another monitor, or the mode can change).
+const FRAME_INTERVAL_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// A deferred animation frame due within this much of now is asked for now:
+/// a timer wake that short costs more than it saves.
+const ANIMATION_FRAME_SLACK: std::time::Duration = std::time::Duration::from_micros(250);
+
+/// The display refresh period for a refresh rate in millihertz, or `None` for
+/// a rate outside 20 to 1000 Hz (unknown or nonsense: no pacing).
+pub(crate) fn refresh_period(millihertz: u32) -> Option<std::time::Duration> {
+    if !(20_000..=1_000_000).contains(&millihertz) {
+        return None;
+    }
+    Some(std::time::Duration::from_secs_f64(1000.0 / f64::from(millihertz)))
+}
+
+/// When an animating window's next frame should be asked for: `None` for now
+/// (no known refresh period, or a frame period has already passed since the
+/// last frame started), else the instant one display period after
+/// `frame_start`.
+pub(crate) fn next_animation_frame(
+    frame_start: Instant,
+    now: Instant,
+    period: Option<std::time::Duration>,
+) -> Option<Instant> {
+    let due = frame_start + period?;
+    (due > now + ANIMATION_FRAME_SLACK).then_some(due)
+}
+
 pub struct View<Rend: WindowRenderer> {
     pub doc: Box<dyn Document>,
 
@@ -170,6 +216,12 @@ pub struct View<Rend: WindowRenderer> {
     redraw_asked: Arc<std::sync::atomic::AtomicBool>,
     /// The last `redraw` presented a frame and asked for no next one.
     last_frame_settled: bool,
+    /// polyvox-vrc R-OMQ.1: an animation frame waiting for the display's next
+    /// refresh ([`next_animation_frame`]); the event loop asks for it in
+    /// `about_to_wait` once due. Any frame that paints first clears it.
+    anim_frame_due: Option<Instant>,
+    /// This window's display refresh period and when it was read.
+    frame_period: Option<(Instant, Option<std::time::Duration>)>,
 
     #[cfg(target_arch = "wasm32")]
     pending_resize: Option<winit::dpi::PhysicalSize<u32>>,
@@ -316,6 +368,8 @@ impl<Rend: WindowRenderer> View<Rend> {
             owed_paint_done_at: None,
             redraw_asked,
             last_frame_settled: false,
+            anim_frame_due: None,
+            frame_period: None,
             #[cfg(feature = "accessibility")]
             accessibility,
 
@@ -638,6 +692,8 @@ impl<Rend: WindowRenderer> View<Rend> {
         #[cfg(target_os = "ios")]
         self.ios_request_redraw.set(false);
         self.paint_owed = false;
+        let frame_start = Instant::now();
+        self.anim_frame_due = None;
         let animation_time = self.current_animation_time();
         let is_visible = self.is_visible;
 
@@ -698,8 +754,53 @@ impl<Rend: WindowRenderer> View<Rend> {
 
         self.last_frame_settled = painted && !is_animating && !self.surface_size_dirty;
         if !is_blocked && is_visible && is_animating {
-            self.request_redraw();
+            self.request_animation_frame(frame_start);
         }
+    }
+
+    /// The display refresh period of the monitor this window is on, re-read
+    /// at most once a second.
+    fn display_period(&mut self) -> Option<std::time::Duration> {
+        let now = Instant::now();
+        if let Some((read_at, period)) = self.frame_period
+            && now.duration_since(read_at) < FRAME_INTERVAL_REFRESH
+        {
+            return period;
+        }
+        let period = self
+            .window
+            .current_monitor()
+            .and_then(|m| m.current_video_mode())
+            .and_then(|mode| mode.refresh_rate_millihertz())
+            .and_then(|mhz| refresh_period(mhz.get()));
+        self.frame_period = Some((now, period));
+        period
+    }
+
+    /// Ask for an animation's next frame, one display period after the frame
+    /// that started at `frame_start` (polyvox-vrc R-OMQ.1).
+    fn request_animation_frame(&mut self, frame_start: Instant) {
+        let period = if frame_pacing_enabled() {
+            self.display_period()
+        } else {
+            None
+        };
+        match next_animation_frame(frame_start, Instant::now(), period) {
+            None => self.request_redraw(),
+            Some(due) => self.anim_frame_due = Some(due),
+        }
+    }
+
+    /// Ask for a deferred animation frame that is due by `now`. Returns when
+    /// the one still waiting is due, for the event loop's wake.
+    pub fn fire_due_animation_frame(&mut self, now: Instant) -> Option<Instant> {
+        let due = self.anim_frame_due?;
+        if due > now + ANIMATION_FRAME_SLACK {
+            return Some(due);
+        }
+        self.anim_frame_due = None;
+        self.request_redraw();
+        None
     }
 
     pub fn pointer_coords(&self, position: PhysicalPosition<f64>) -> PointerCoords {
@@ -1150,5 +1251,51 @@ impl<Rend: WindowRenderer> View<Rend> {
             WindowEvent::DragLeft { .. } => {},
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_pacing_tests {
+    use super::{next_animation_frame, refresh_period};
+    use std::time::Duration;
+    use web_time::Instant;
+
+    #[test]
+    fn refresh_period_follows_the_rate_and_drops_nonsense() {
+        let p360 = refresh_period(360_000).unwrap();
+        assert!((p360.as_secs_f64() - 1.0 / 360.0).abs() < 1e-9);
+        let p60 = refresh_period(59_940).unwrap();
+        assert!((p60.as_secs_f64() * 1000.0 - 16.683).abs() < 0.01);
+        assert_eq!(refresh_period(0), None);
+        assert_eq!(refresh_period(19_999), None);
+        assert_eq!(refresh_period(1_000_001), None);
+    }
+
+    #[test]
+    fn an_animation_frame_waits_one_display_period_after_the_last_start() {
+        let start = Instant::now();
+        let period = Some(Duration::from_micros(2778));
+        // Asked right after a 0.4 ms frame: due one period after its start.
+        let now = start + Duration::from_micros(400);
+        assert_eq!(
+            next_animation_frame(start, now, period),
+            Some(start + Duration::from_micros(2778))
+        );
+    }
+
+    #[test]
+    fn a_frame_late_past_its_period_or_with_no_known_rate_is_asked_for_now() {
+        let start = Instant::now();
+        let period = Some(Duration::from_micros(2778));
+        assert_eq!(
+            next_animation_frame(start, start + Duration::from_millis(3), period),
+            None
+        );
+        // Within the slack of the due time: now, not a timer wake.
+        assert_eq!(
+            next_animation_frame(start, start + Duration::from_micros(2600), period),
+            None
+        );
+        assert_eq!(next_animation_frame(start, start, None), None);
     }
 }
