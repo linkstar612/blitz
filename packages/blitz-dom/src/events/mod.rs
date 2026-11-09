@@ -7,6 +7,8 @@ mod pointer;
 mod touch_tests;
 #[cfg(test)]
 mod hit_clip_tests;
+#[cfg(test)]
+mod fork_gap_tests;
 
 use crate::util::Point;
 use blitz_traits::events::{DomEvent, DomEventData, MouseEventButton, PointerCoords, UiEvent};

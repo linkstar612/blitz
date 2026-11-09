@@ -25,6 +25,16 @@ pub(crate) fn opacity_at(elapsed: Duration) -> f32 {
     }
 }
 
+/// What a hit test found of the innermost overlay scrollbar under the point:
+/// its thumb, or its track with the page direction (polyvox R-OMS.40). At
+/// most one is set; a descendant scroll container's part replaces an
+/// ancestor's.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct ScrollbarProbe {
+    pub thumb: Option<ScrollbarRef>,
+    pub track: Option<(ScrollbarRef, f64)>,
+}
+
 /// A specific scrollbar: one axis of one scroll container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollbarRef {
@@ -218,6 +228,59 @@ impl Node {
             }
         }
         None
+    }
+
+    /// The scrollbar track (the thumb's lane along the whole scrollport,
+    /// thumb excluded) containing the given point, in the same coordinates
+    /// as [`scrollbar_at_local`](Self::scrollbar_at_local), with the page
+    /// direction: `-1.0` before the thumb, `1.0` after it. A press there
+    /// pages the scroller, as Chromium's overlay scrollbar does (polyvox
+    /// R-OMS.40).
+    pub(crate) fn scrollbar_track_at_local(&self, x: f64, y: f64) -> Option<(ScrollbarRef, f64)> {
+        if !cfg!(feature = "scrollbars") {
+            return None;
+        }
+        let port = self.scrollport();
+        for axis in [AbsoluteAxis::Vertical, AbsoluteAxis::Horizontal] {
+            if !self.wants_scrollbar(axis) {
+                continue;
+            }
+            let Some(thumb) = self.scrollbar_thumb(axis) else {
+                continue;
+            };
+            let (track, before) = match axis {
+                AbsoluteAxis::Horizontal => (
+                    KurboRect::new(port.x0, thumb.y0, port.x1, thumb.y1),
+                    x < thumb.x0,
+                ),
+                AbsoluteAxis::Vertical => (
+                    KurboRect::new(thumb.x0, port.y0, thumb.x1, port.y1),
+                    y < thumb.y0,
+                ),
+            };
+            let point = kurbo::Point::new(x, y);
+            if track.contains(point) && !thumb.contains(point) {
+                let scrollbar = ScrollbarRef {
+                    node_id: self.id,
+                    axis,
+                };
+                return Some((scrollbar, if before { -1.0 } else { 1.0 }));
+            }
+        }
+        None
+    }
+
+    /// How far one track press pages the scroller along `axis`, in CSS px:
+    /// 87.5% of the scrollport, Chromium's `kMinFractionToStepWhenPaging`
+    /// (polyvox R-OMS.40).
+    pub fn scrollbar_page_step(&self, axis: AbsoluteAxis) -> f64 {
+        const FRACTION_TO_STEP_WHEN_PAGING: f64 = 0.875;
+        let port = self.scrollport();
+        let len = match axis {
+            AbsoluteAxis::Horizontal => port.width(),
+            AbsoluteAxis::Vertical => port.height(),
+        };
+        (len * FRACTION_TO_STEP_WHEN_PAGING).max(1.0)
     }
 }
 

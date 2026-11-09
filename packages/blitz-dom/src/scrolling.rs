@@ -430,6 +430,30 @@ impl BaseDocument {
         )
     }
 
+    /// Page one scroller by `(x, y)` scroll-offset px (positive moves toward
+    /// the end) for a scrollbar track press. Clamped to that scroller: a
+    /// track press at the end does not hand the page to an ancestor
+    /// (polyvox R-OMS.40).
+    pub(crate) fn scroll_node_page(
+        &mut self,
+        node_id: NodeId,
+        x: f64,
+        y: f64,
+        dispatch_event: &mut dyn FnMut(DomEvent),
+    ) -> bool {
+        self.scroll(
+            ScrollRequest {
+                target: ScrollTarget::Node(node_id),
+                amount: ScrollAmount::By(Point { x, y }),
+                overflow: ScrollOverflow::Clamp,
+                source: ScrollSource::User,
+                behavior: ScrollBehavior::Instant,
+                interrupt_animation: true,
+            },
+            dispatch_event,
+        )
+    }
+
     /// Duration (in milliseconds) of an animated scroll.
     const SMOOTH_SCROLL_DURATION_MS: f64 = 300.0;
 

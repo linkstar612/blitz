@@ -57,6 +57,7 @@ mod resolve;
 /// Computation of resolved CSS property values (`getComputedStyle()`)
 mod resolved_style;
 /// Scrolling of nodes and the viewport, and scroll animations.
+mod scroll_anchor;
 mod scrolling;
 mod selection;
 /// Implementations that interact with servo's style engine

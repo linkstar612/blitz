@@ -61,6 +61,9 @@ pub(crate) enum DragMode {
     Panning(PanState),
     /// We are currently dragging a scrollbar thumb
     ScrollbarDrag(ScrollbarDragState),
+    /// A press paged a scrollbar track; its release clicks nothing under the
+    /// overlay (polyvox R-OMS.40)
+    ScrollbarTrack,
 }
 
 /// polyvox R-OLR.2: a finger press that may still become a click.
@@ -473,7 +476,8 @@ pub(crate) fn handle_pointerdown(
     // are not dispatched to the page (matching native scrollbars). A
     // faded-out thumb doesn't capture: the click goes to the content.
     if button == MouseEventButton::Main {
-        if let (_, Some(scrollbar)) = doc.hit_with_scrollbar(x, y)
+        let (_, probe) = doc.hit_with_scrollbar_parts(x, y);
+        if let Some(scrollbar) = probe.thumb
             && doc.scrollbar_opacity(scrollbar.node_id) > 0.0
         {
             doc.drag_mode = DragMode::ScrollbarDrag(ScrollbarDragState {
@@ -483,6 +487,24 @@ pub(crate) fn handle_pointerdown(
                     AbsoluteAxis::Vertical => y,
                 },
             });
+            doc.shell_provider.request_redraw();
+            return;
+        }
+        // A press on a visible track pages the scroller toward the press,
+        // one 87.5% step per press, and does not reach the content under
+        // the overlay (polyvox R-OMS.40). Held-press auto-repeat is not
+        // replicated.
+        if let Some((scrollbar, direction)) = probe.track
+            && doc.scrollbar_opacity(scrollbar.node_id) > 0.0
+        {
+            let step = direction * doc.nodes[scrollbar.node_id].scrollbar_page_step(scrollbar.axis);
+            let (dx, dy) = match scrollbar.axis {
+                AbsoluteAxis::Horizontal => (step, 0.0),
+                AbsoluteAxis::Vertical => (0.0, step),
+            };
+            doc.scroll_node_page(scrollbar.node_id, dx, dy, dispatch_event);
+            doc.drag_mode = DragMode::ScrollbarTrack;
+            doc.show_scrollbars(scrollbar.node_id);
             doc.shell_provider.request_redraw();
             return;
         }
@@ -560,8 +582,13 @@ pub(crate) fn handle_pointerdown(
         ClickTarget::SelectableText
             if button != MouseEventButton::Main && doc.text_selection_contains_point(x, y) => {}
         ClickTarget::SelectableText => {
-            // Handle text selection for non-input elements
-            if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
+            // Handle text selection for non-input elements. A double click
+            // selects the word and a triple click the line, as the TextInput
+            // arm below does inside a field (polyvox R-OMS.40).
+            if let Some((inline_root_id, range)) = doc.find_text_range(x, y, doc.click_count) {
+                doc.set_text_selection(inline_root_id, range.start, inline_root_id, range.end);
+                doc.shell_provider.request_redraw();
+            } else if let Some((inline_root_id, byte_offset)) = doc.find_text_position(x, y) {
                 doc.set_text_selection(inline_root_id, byte_offset, inline_root_id, byte_offset);
                 doc.shell_provider.request_redraw();
             } else {

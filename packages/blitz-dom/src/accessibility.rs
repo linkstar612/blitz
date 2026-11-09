@@ -1,5 +1,5 @@
 use crate::{BaseDocument, ElementData, Node as BlitzDomNode, local_name};
-use accesskit::{Node as AccessKitNode, NodeId, Role, TreeId, TreeInfo, TreeUpdate};
+use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
 use style::properties::longhands::visibility;
 
 impl BaseDocument {
@@ -71,6 +71,8 @@ impl BaseDocument {
             if element_data.attr(local_name!("aria-hidden")) == Some("true") {
                 builder.set_hidden();
             }
+
+            set_name_and_states(&mut builder, element_data);
         } else if node.is_text_node() {
             builder.set_role(Role::TextRun);
             builder.set_value(node.text_content());
@@ -95,6 +97,72 @@ impl BlitzDomNode {
                         == visibility::computed_value::T::Hidden
             })
             .unwrap_or(false)
+    }
+}
+
+/// polyvox R-OMS.40: the accessible name and the checked, pressed, expanded,
+/// disabled and value states, from ARIA first and the native control second,
+/// so a screen reader can name a kit control (a `div` with `role`) and read
+/// its state. <https://www.w3.org/TR/html-aam-1.0/>
+fn set_name_and_states(builder: &mut AccessKitNode, el: &ElementData) {
+    let attr = |name| el.attr(name).map(str::trim).filter(|v| !v.is_empty());
+
+    // Name: `aria-label`, then `title` (accname step 2I, the tooltip).
+    if let Some(label) = attr(local_name!("aria-label")).or_else(|| attr(local_name!("title"))) {
+        builder.set_label(label);
+    }
+
+    let tristate = |value: &str| match value {
+        "true" => Some(Toggled::True),
+        "false" => Some(Toggled::False),
+        "mixed" => Some(Toggled::Mixed),
+        _ => None,
+    };
+    let toggled = attr(local_name!("aria-checked"))
+        .and_then(tristate)
+        .or_else(|| attr(local_name!("aria-pressed")).and_then(tristate))
+        .or_else(|| el.checkbox_input_checked().map(Toggled::from));
+    if let Some(toggled) = toggled {
+        builder.set_toggled(toggled);
+    }
+
+    match attr(local_name!("aria-expanded")) {
+        Some("true") => builder.set_expanded(true),
+        Some("false") => builder.set_expanded(false),
+        _ => {}
+    }
+
+    if el.has_attr(local_name!("disabled")) || attr(local_name!("aria-disabled")) == Some("true") {
+        builder.set_disabled();
+    }
+
+    let number = |name| attr(name).and_then(|v| v.parse::<f64>().ok());
+    let is_range = el.name.local == local_name!("input")
+        && el.attr(local_name!("type")) == Some("range");
+    let now = number(local_name!("aria-valuenow"))
+        .or_else(|| is_range.then(|| number(local_name!("value"))).flatten());
+    if let Some(now) = now {
+        builder.set_numeric_value(now);
+    }
+    let min = number(local_name!("aria-valuemin"))
+        .or_else(|| is_range.then(|| number(local_name!("min")).or(Some(0.0))).flatten());
+    if let Some(min) = min {
+        builder.set_min_numeric_value(min);
+    }
+    let max = number(local_name!("aria-valuemax"))
+        .or_else(|| is_range.then(|| number(local_name!("max")).or(Some(100.0))).flatten());
+    if let Some(max) = max {
+        builder.set_max_numeric_value(max);
+    }
+
+    // Text value: `aria-valuetext`, else a text field's current text. A
+    // password field never exposes its text.
+    if let Some(text) = attr(local_name!("aria-valuetext")) {
+        builder.set_value(text);
+    } else if let Some(input) = el.text_input_data()
+        && el.attr(local_name!("type")) != Some("password")
+    {
+        builder.set_value(input.editor.raw_text());
     }
 }
 

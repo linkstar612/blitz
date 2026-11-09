@@ -1364,7 +1364,7 @@ impl Node {
     /// TODO: z-index
     /// (If multiple children are positioned at the position then a random one will be recursed into)
     pub fn hit(&self, x: f32, y: f32, scale: f64) -> Option<HitResult> {
-        self.hit_inner(x, y, scale, &mut None)
+        self.hit_inner(x, y, scale, &mut Default::default())
     }
 
     /// [`hit`](Self::hit), also resolving the innermost overlay scrollbar
@@ -1376,7 +1376,7 @@ impl Node {
         x: f32,
         y: f32,
         scale: f64,
-        scrollbar: &mut Option<crate::node::ScrollbarRef>,
+        scrollbar: &mut crate::node::scrollbar::ScrollbarProbe,
     ) -> Option<HitResult> {
         use style::computed_values::pointer_events::T as PointerEvents;
         use style::computed_values::visibility::T as Visibility;
@@ -1462,14 +1462,22 @@ impl Node {
         }
 
         // Descendants overwrite, so the innermost scroll container's thumb
-        // wins. Thumb coords are border-box relative (unscrolled).
-        if matches_self
-            && let Some(sb) = self.scrollbar_at_local(
-                (x - self.scroll_offset().x as f32) as f64,
-                (y - self.scroll_offset().y as f32) as f64,
-            )
-        {
-            *scrollbar = Some(sb);
+        // (or track, polyvox R-OMS.40) wins. Thumb coords are border-box
+        // relative (unscrolled).
+        if matches_self {
+            let local_x = (x - self.scroll_offset().x as f32) as f64;
+            let local_y = (y - self.scroll_offset().y as f32) as f64;
+            if let Some(sb) = self.scrollbar_at_local(local_x, local_y) {
+                *scrollbar = crate::node::scrollbar::ScrollbarProbe {
+                    thumb: Some(sb),
+                    track: None,
+                };
+            } else if let Some(track) = self.scrollbar_track_at_local(local_x, local_y) {
+                *scrollbar = crate::node::scrollbar::ScrollbarProbe {
+                    thumb: None,
+                    track: Some(track),
+                };
+            }
         }
 
         let content_box_offset = taffy::Point {
@@ -1609,6 +1617,36 @@ impl Node {
             let id = node.layout_parent.get()?;
             node = self.with(id);
         }
+    }
+
+    /// The byte range a multi-click selects at a point (same coordinates as
+    /// [`text_offset_at_point`](Self::text_offset_at_point)): the word under
+    /// it for `click_count == 2`, its hard line (up to a `<br>` or the block's
+    /// end) for 3 or more, `None` for a single click or a miss. Page text gets
+    /// the same granularities a text input's editor already gives a
+    /// double and triple click (polyvox R-OMS.40).
+    pub fn text_range_at_point(
+        &self,
+        x: f32,
+        y: f32,
+        click_count: u16,
+    ) -> Option<std::ops::Range<usize>> {
+        if click_count < 2 || !self.flags.is_inline_root() {
+            return None;
+        }
+        let inline_layout = self.element_data()?.inline_layout_data.as_ref()?;
+        let layout = &inline_layout.layout;
+        let scale = layout.scale();
+        let (x, y) = (x * scale, (y - inline_layout.block_offset) * scale);
+        // A press past the last line still has to land on text, as the single
+        // click's `Cluster::from_point` requires.
+        Cluster::from_point(layout, x, y)?;
+        let selection = if click_count == 2 {
+            parley::Selection::word_from_point(layout, x, y)
+        } else {
+            parley::Selection::hard_line_from_point(layout, x, y)
+        };
+        Some(selection.text_range())
     }
 
     /// Get the text byte offset at a given point, using coordinates already transformed

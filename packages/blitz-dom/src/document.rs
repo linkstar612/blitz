@@ -941,7 +941,7 @@ impl BaseDocument {
         let drag_references_node = match &self.drag_mode {
             DragMode::Panning(state) => state.target == node_id,
             DragMode::ScrollbarDrag(state) => state.scrollbar.node_id == node_id,
-            DragMode::Selecting | DragMode::None => false,
+            DragMode::Selecting | DragMode::ScrollbarTrack | DragMode::None => false,
         };
         if drag_references_node {
             self.drag_mode = DragMode::None;
@@ -1795,19 +1795,30 @@ impl BaseDocument {
         x: f32,
         y: f32,
     ) -> (Option<HitResult>, Option<crate::node::ScrollbarRef>) {
+        let (hit, probe) = self.hit_with_scrollbar_parts(x, y);
+        (hit, probe.thumb)
+    }
+
+    /// [`hit_with_scrollbar`](Self::hit_with_scrollbar), also reporting the
+    /// innermost scrollbar track under the point (polyvox R-OMS.40).
+    pub(crate) fn hit_with_scrollbar_parts(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> (Option<HitResult>, crate::node::scrollbar::ScrollbarProbe) {
+        let mut probe = crate::node::scrollbar::ScrollbarProbe::default();
         if TDocument::as_node(&self.root_node())
             .first_element_child()
             .is_none()
         {
             #[cfg(feature = "tracing")]
             tracing::warn!("No DOM - not resolving hit test");
-            return (None, None);
+            return (None, probe);
         }
-        let mut scrollbar = None;
         let hit = self
             .root_element()
-            .hit_inner(x, y, self.viewport().scale_f64(), &mut scrollbar);
-        (hit, scrollbar)
+            .hit_inner(x, y, self.viewport().scale_f64(), &mut probe);
+        (hit, probe)
     }
 
     pub fn set_hover_to(&mut self, x: f32, y: f32) -> bool {
@@ -2513,6 +2524,21 @@ impl BaseDocument {
         let inline_root = hit_node.inline_root_ancestor()?;
         let byte_offset = inline_root.text_offset_at_point(hit.x, hit.y)?;
         Some((inline_root.id, byte_offset))
+    }
+
+    /// The inline root and byte range a double (word) or triple (hard line)
+    /// click selects at a point (polyvox R-OMS.40). `None` for a single click
+    /// or a point that hits no text.
+    pub fn find_text_range(
+        &self,
+        x: f32,
+        y: f32,
+        click_count: u16,
+    ) -> Option<(NodeId, std::ops::Range<usize>)> {
+        let hit = self.hit(x, y)?;
+        let inline_root = self.get_node(hit.node_id)?.inline_root_ancestor()?;
+        let range = inline_root.text_range_at_point(hit.x, hit.y, click_count)?;
+        Some((inline_root.id, range))
     }
 
     /// Set the text selection range (creates a new selection from anchor to focus)

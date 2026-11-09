@@ -79,6 +79,10 @@ impl BaseDocument {
         // accumulated since the last resolve as a single device rebuild.
         self.flush_pending_device_changes();
 
+        // polyvox R-OMS.40: pick each scrolled element's anchor from the
+        // previous frame's box tree and layout, before either changes.
+        let scroll_anchors = self.select_scroll_anchors();
+
         // we need to resolve stylist first since it will need to drive our layout bits
         self.resolve_stylist(current_time_for_animations);
         timer.record_time("style");
@@ -113,6 +117,7 @@ impl BaseDocument {
         timer.record_time("layout");
         self.nodes.bump_geometry_generation();
 
+        self.apply_scroll_anchors(scroll_anchors);
         self.clamp_scroll_offsets();
 
         // Resolve transforms
