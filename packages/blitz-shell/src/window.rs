@@ -30,6 +30,25 @@ use winit::{event::Modifiers, event::WindowEvent, keyboard::KeyCode, window::Win
 #[cfg(feature = "accessibility")]
 use crate::accessibility::AccessibilityState;
 
+
+/// rmboot8 TRACE (temporary): reveal-path trace to the file named by
+/// `BLITZ_REVEAL_TRACE`, one line per call.
+pub(crate) fn rtrace(msg: impl FnOnce() -> String) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    let start = *START.get_or_init(std::time::Instant::now);
+    let f = FILE.get_or_init(|| {
+        let path = std::env::var_os("BLITZ_REVEAL_TRACE")?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path).ok().map(std::sync::Mutex::new)
+    });
+    if let Some(f) = f {
+        if let Ok(mut f) = f.lock() {
+            let _ = writeln!(f, "{:>10.3} {}", start.elapsed().as_secs_f64() * 1000.0, msg());
+        }
+    }
+}
+
 // Ignore safe_area_insets on macOS because we don't want to avoid
 // drawing in the titlebar.
 #[cfg(target_os = "macos")]
@@ -462,6 +481,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// in response.
     pub fn resume(&mut self) {
         let window_id = self.window_id();
+        rtrace(|| format!("resume {window_id:?} defer={} waker={}", self.defer_first_resume, self.waker.is_some()));
         // A deferred window (polyvox-vrc R-OIS.6) starts out like a released
         // one: its document polls, its renderer waits for `show_after_frame`.
         if std::mem::take(&mut self.defer_first_resume) {
@@ -494,11 +514,13 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// [`BlitzShellEvent::ResumeReady`] event. Paints the first frame and
     /// installs the doc poll waker. Returns `true` if the renderer is now active.
     pub fn complete_resume(&mut self) -> bool {
+        let pre_active = self.renderer.is_active();
         // polyvox-vrc R-OMQ.13: a renderer wake (a frame retried after the
         // GPU was busy, a readback shown, a rebuild) may post the paint
         // message a skip would eat. Ahead of the check: a retry answers false.
         self.owed_paint_done_at = None;
         if !self.renderer.complete_resume() {
+            rtrace(|| format!("complete_resume {:?} -> false pre_active={pre_active}", self.window_id()));
             return false;
         }
 
@@ -539,6 +561,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         });
         drop(inner);
 
+        rtrace(|| format!("complete_resume {window_id:?} painted pre_active={pre_active} blocked={is_blocked} doc_polled={} reveal_pending={} vis={} had_waker={}", self.doc_polled, self.reveal_pending, self.is_visible, self.waker.is_some()));
         self.waker = Some(create_waker(&self.proxy, window_id));
         // A frame painted with a stylesheet or font still loading is not the
         // document; leave the reveal to the first unblocked `redraw`.
@@ -565,6 +588,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// blocked on a critical resource would then never be followed by the
     /// unblocked one the reveal waits for.
     pub fn request_redraw_or_paint(&mut self) {
+        rtrace(|| format!("request_redraw_or_paint {:?} reveal_pending={} active={}", self.window.id(), self.reveal_pending, self.renderer.is_active()));
         if self.reveal_pending && self.renderer.is_active() {
             self.redraw();
         } else {
@@ -578,6 +602,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// A no-op once the window has been shown, and a wait while the document
     /// has not been polled yet (that frame is an empty document).
     fn reveal_after_frame(&mut self) {
+        rtrace(|| format!("reveal_after_frame {:?} reveal_pending={} doc_polled={}", self.window.id(), self.reveal_pending, self.doc_polled));
         if !self.reveal_pending || !self.doc_polled {
             return;
         }
@@ -594,6 +619,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// winit's visibility flag agrees with the OS. Brought back by
     /// [`show_after_frame`](Self::show_after_frame).
     pub fn hide_and_release(&mut self) {
+        rtrace(|| format!("hide_and_release {:?}", self.window.id()));
         self.reveal_pending = false;
         self.is_visible = false;
         self.window.set_visible(false);
@@ -610,6 +636,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// stale swapchain. Also safe for a window hidden some other way: its
     /// renderer is still active, so it paints and shows at once.
     pub fn show_after_frame(&mut self) {
+        rtrace(|| format!("show_after_frame {:?}", self.window.id()));
         // A window hidden behind winit's back (a raw `ShowWindow`) still has
         // the visible flag, and the reveal's `set_visible(true)` would then
         // be a no-op. Clearing it first makes that reveal a real show; a
@@ -637,9 +664,14 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn poll(&mut self) -> bool {
+        if self.waker.is_none() {
+            rtrace(|| format!("poll {:?} no-waker", self.window_id()));
+        }
         if let Some(waker) = &self.waker {
             let cx = std::task::Context::from_waker(waker);
-            if self.doc.poll(Some(cx)) {
+            let got = self.doc.poll(Some(cx));
+            rtrace(|| format!("poll {:?} got={got} reveal_pending={} active={}", self.window.id(), self.reveal_pending, self.renderer.is_active()));
+            if got {
                 self.doc_polled = true;
                 #[cfg(feature = "accessibility")]
                 {
@@ -736,6 +768,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         let is_blocked = inner.has_pending_critical_resources();
         let insets = self.safe_area_insets;
         let painted = !is_blocked && is_visible && self.renderer.is_active();
+        rtrace(|| format!("redraw {:?} painted={painted} blocked={is_blocked} vis={is_visible} active={} reveal_pending={} doc_polled={}", self.window.id(), self.renderer.is_active(), self.reveal_pending, self.doc_polled));
 
         if !is_blocked && is_visible {
             // The document is laid out at the new size by now (`resolve`
@@ -987,6 +1020,7 @@ impl<Rend: WindowRenderer> View<Rend> {
                 // Currently handled at the level above in application.rs
             }
             WindowEvent::RedrawRequested => {
+                rtrace(|| format!("RedrawRequested {:?}", self.window.id()));
                 // polyvox-vrc R-OMQ.13: the paint message after an owed frame
                 // that already went out (`paint_owed_now`).
                 let done_at = self.owed_paint_done_at.take();
@@ -1004,6 +1038,7 @@ impl<Rend: WindowRenderer> View<Rend> {
             }
             WindowEvent::Moved(_) => {}
             WindowEvent::Occluded(is_occluded) => {
+                rtrace(|| format!("Occluded {:?} {is_occluded}", self.window.id()));
                 self.is_visible = !is_occluded;
                 if self.is_visible {
                     self.request_redraw();
