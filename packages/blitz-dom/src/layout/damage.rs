@@ -580,7 +580,11 @@ impl BaseDocument {
 
                     // Check cache first
                     let url_str = new_url.as_str();
-                    if let Some(cached_image) = self.image_cache.get(url_str) {
+                    if let Some(cached_image) = self
+                        .image_cache
+                        .get(url_str)
+                        .map(|cached| cached.hit(&self.image_cache_clock))
+                    {
                         #[cfg(feature = "tracing")]
                         tracing::info!("Loading image {url_str} from cache");
                         Some(ImageResourceData {

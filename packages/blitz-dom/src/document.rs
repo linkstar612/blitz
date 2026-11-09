@@ -32,7 +32,7 @@ use parley::{FontContext, PlainEditorDriver};
 use selectors::{Element, matching::QuirksMode};
 use smallvec::SmallVec;
 use std::any::Any;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, Bound, HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
@@ -189,6 +189,50 @@ pub enum DocumentEvent {
     },
 }
 
+/// POLYVOX PATCH (R-OMW.1): bytes of decoded images the cache keeps after the
+/// last node showing them lets go, for a page that shows the same picture
+/// again. Past this the least recently used unused images are dropped.
+pub const UNUSED_IMAGE_BUDGET_BYTES: usize = 32 << 20;
+
+/// POLYVOX PATCH (R-OMW.1): an image in [`BaseDocument`]'s image cache, with
+/// the cache clock of its last use.
+pub(crate) struct CachedImage {
+    pub(crate) image: ImageData,
+    pub(crate) last_used: Cell<u64>,
+}
+
+impl CachedImage {
+    /// The image, marked as used now.
+    pub(crate) fn hit(&self, clock: &Cell<u64>) -> &ImageData {
+        let now = clock.get() + 1;
+        clock.set(now);
+        self.last_used.set(now);
+        &self.image
+    }
+
+    /// The cache holds the only reference to the pixels: no node shows it.
+    fn unused(&self) -> bool {
+        match &self.image {
+            ImageData::Raster(raster) => raster.data.strong_count() <= 1,
+            #[cfg(feature = "svg")]
+            ImageData::Svg(svg) => Arc::strong_count(&svg.tree) <= 1,
+            ImageData::None => true,
+        }
+    }
+
+    /// The pixels (an SVG tree counts as a nominal 256 KiB) plus the URL the
+    /// entry is keyed by, which for a data URL is the whole encoded image.
+    fn bytes(&self, url: &str) -> usize {
+        let pixels = match &self.image {
+            ImageData::Raster(raster) => raster.data.len(),
+            #[cfg(feature = "svg")]
+            ImageData::Svg(_) => 256 << 10,
+            ImageData::None => 0,
+        };
+        pixels + url.len()
+    }
+}
+
 pub struct BaseDocument {
     /// ID of the document
     id: usize,
@@ -330,7 +374,16 @@ pub struct BaseDocument {
 
     /// Cache of loaded images, keyed by URL. Allows reusing images across multiple
     /// elements without re-fetching from the network.
-    pub(crate) image_cache: HashMap<String, ImageData>,
+    ///
+    /// POLYVOX PATCH (R-OMW.1): bounded. Upstream never removes an entry, so every
+    /// URL a page ever showed stayed decoded for the life of the document. A
+    /// preview re-rendered as a new data URL on every caption update held 18.9 GB
+    /// after five hours. An entry now goes once no node shows its image and the
+    /// unused ones pass [`UNUSED_IMAGE_BUDGET_BYTES`], least recently used first
+    /// ([`Self::evict_unused_images`]).
+    pub(crate) image_cache: HashMap<String, CachedImage>,
+    /// POLYVOX PATCH (R-OMW.1): the clock [`CachedImage`] recency is counted in.
+    pub(crate) image_cache_clock: Cell<u64>,
 
     /// Tracks in-flight image requests. When an image is being fetched, additional
     /// requests for the same URL are queued here instead of starting new fetches.
@@ -486,6 +539,7 @@ impl BaseDocument {
             changed_nodes: HashSet::new(),
             deferred_construction_nodes: Vec::new(),
             image_cache: HashMap::new(),
+            image_cache_clock: Cell::new(0),
             pending_images: HashMap::new(),
             pending_style_image_nodes: Vec::new(),
             pending_critical_resources: HashSet::new(),
@@ -1379,7 +1433,15 @@ impl BaseDocument {
         );
 
         // Cache the image
-        self.image_cache.insert(url.to_string(), image.clone());
+        let now = self.image_cache_clock.get() + 1;
+        self.image_cache_clock.set(now);
+        self.image_cache.insert(
+            url.to_string(),
+            CachedImage {
+                image: image.clone(),
+                last_used: Cell::new(now),
+            },
+        );
 
         // Apply to all waiting nodes
         for (node_id, image_type) in waiting_nodes {
@@ -1416,6 +1478,50 @@ impl BaseDocument {
                 }
             }
         }
+
+        // POLYVOX PATCH (R-OMW.1): the nodes now hold the new image, so the one
+        // they showed before is unused and can go.
+        self.evict_unused_images();
+    }
+
+    /// POLYVOX PATCH (R-OMW.1): drops the cached images no node shows any more
+    /// once together they hold more than [`UNUSED_IMAGE_BUDGET_BYTES`], least
+    /// recently used first. Images a node still shows are never dropped: their
+    /// pixels stay alive through the node either way.
+    fn evict_unused_images(&mut self) {
+        let mut unused: Vec<(u64, usize)> = self
+            .image_cache
+            .iter()
+            .filter(|(_, cached)| cached.unused())
+            .map(|(url, cached)| (cached.last_used.get(), cached.bytes(url)))
+            .collect();
+        if unused.iter().map(|(_, bytes)| bytes).sum::<usize>() <= UNUSED_IMAGE_BUDGET_BYTES {
+            return;
+        }
+        // Newest first: keep them while they fit, then drop that one and older.
+        unused.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+        let mut kept = 0;
+        let mut cutoff = u64::MAX;
+        for (used, bytes) in unused {
+            if kept + bytes > UNUSED_IMAGE_BUDGET_BYTES {
+                cutoff = used;
+                break;
+            }
+            kept += bytes;
+        }
+        self.image_cache
+            .retain(|_, cached| !(cached.unused() && cached.last_used.get() <= cutoff));
+    }
+
+    /// POLYVOX PATCH (R-OMW.1): the number of cached images and the bytes they
+    /// hold (pixels plus the URLs they are keyed by).
+    pub fn image_cache_stats(&self) -> (usize, usize) {
+        let bytes: usize = self
+            .image_cache
+            .iter()
+            .map(|(url, cached)| cached.bytes(url))
+            .sum();
+        (self.image_cache.len(), bytes)
     }
 
     /// Snapshot the node's pre-mutation state (element state and attributes) ahead of

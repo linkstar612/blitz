@@ -1177,7 +1177,12 @@ impl<'doc> DocumentMutator<'doc> {
                 let src_string = src.as_str();
 
                 // Check cache first
-                if let Some(cached_image) = self.doc.image_cache.get(src_string) {
+                if let Some(cached_image) = self
+                    .doc
+                    .image_cache
+                    .get(src_string)
+                    .map(|cached| cached.hit(&self.doc.image_cache_clock))
+                {
                     #[cfg(feature = "tracing")]
                     tracing::info!("Loading image {src_string} from cache");
                     let node = &mut self.doc.nodes[target_id];
