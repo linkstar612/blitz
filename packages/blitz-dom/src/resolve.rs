@@ -62,6 +62,15 @@ impl BaseDocument {
             return;
         }
 
+        // polyvox R-OMS.36: a face registered since the last resolve (a font
+        // the embedder fetched off this thread) reshapes the inline text that
+        // was laid out in a fallback, as a loaded `@font-face` does.
+        let font_generation = blitz_traits::text_demand::font_generation();
+        if font_generation != self.font_generation {
+            self.font_generation = font_generation;
+            self.invalidate_inline_contexts();
+        }
+
         self.resolve_scroll_animation();
 
         // Drop scrollbar-activity entries whose fade-out has finished (also

@@ -45,6 +45,12 @@ pub enum BlitzShellEvent {
         window_id: WindowId,
     },
 
+    /// The shared fonts changed off the event loop (polyvox-vrc R-OMS.36, a
+    /// face the embedder fetched and registered after
+    /// `blitz_traits::text_demand::fonts_changed`). Every window draws again,
+    /// so its next resolve reshapes the text laid out in a fallback.
+    FontsChanged,
+
     /// An accessibility event from `accesskit`.
     #[cfg(feature = "accessibility")]
     Accessibility {

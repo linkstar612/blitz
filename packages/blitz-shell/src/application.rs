@@ -103,6 +103,11 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                     window.hide_and_release();
                 }
             }
+            BlitzShellEvent::FontsChanged => {
+                for window in self.windows.values_mut() {
+                    window.request_redraw_or_paint();
+                }
+            }
             BlitzShellEvent::ShowAfterFrame { window_id } => {
                 if let Some(window) = self.windows.get_mut(&window_id) {
                     window.show_after_frame();

@@ -18,8 +18,31 @@
 //! The hook runs synchronously on the layout thread and must return only once
 //! the fonts the demand needs are registered. With no hook installed a demand
 //! is one atomic load.
+//!
+//! A face can also arrive later, off the layout thread (polyvox R-OMS.36, a
+//! download the hook started). The embedder then calls [`fonts_changed`]; every
+//! document compares [`font_generation`] at the start of its next resolve and
+//! lays its inline text out again when it moved, the way a loaded `@font-face`
+//! does. Waking the event loop for that resolve is the embedder's job.
 
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static FONT_GENERATION: AtomicU64 = AtomicU64::new(0);
+
+/// The fonts the shared collection holds changed outside a layout (a face
+/// registered after the text that needed it was shaped). Returns the new
+/// generation.
+pub fn fonts_changed() -> u64 {
+    FONT_GENERATION.fetch_add(1, Ordering::AcqRel) + 1
+}
+
+/// Bumped by each [`fonts_changed`]; a document that saw an older value lays
+/// its inline text out again.
+#[inline]
+pub fn font_generation() -> u64 {
+    FONT_GENERATION.load(Ordering::Acquire)
+}
 
 /// What is about to be shaped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +93,14 @@ mod tests {
 
     fn record(demand: Demand<'_>) {
         SEEN.lock().unwrap().push(format!("{demand:?}"));
+    }
+
+    #[test]
+    fn fonts_changed_moves_the_generation() {
+        let before = font_generation();
+        let after = fonts_changed();
+        assert!(after > before);
+        assert_eq!(font_generation(), after);
     }
 
     #[test]
