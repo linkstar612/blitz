@@ -1002,6 +1002,7 @@ impl<Rend: WindowRenderer> View<Rend> {
     }
 
     pub fn handle_winit_event(&mut self, event: WindowEvent) {
+        rtrace(|| { let d = format!("{event:?}"); format!("ev {:?} os_visible={:?} {}", self.window.id(), self.window.is_visible(), &d[..d.len().min(90)]) });
         // Update accessibility focus and window size state in response to a Winit WindowEvent
         #[cfg(feature = "accessibility")]
         self.accessibility
