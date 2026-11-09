@@ -94,6 +94,7 @@ impl<Rend: WindowRenderer> BlitzApplication<Rend> {
                 // If a stale event survives a suspend, dropping it is safe.
                 // A window released between its resume and this event
                 // (polyvox-vrc R-OIS.6, `HideAndRelease`) answers false.
+                crate::window::rtrace(|| format!("ResumeReady-event {window_id:?} found={}", self.windows.contains_key(&window_id)));
                 if let Some(window) = self.windows.get_mut(&window_id) {
                     let _ = window.complete_resume();
                 }

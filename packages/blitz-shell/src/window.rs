@@ -515,6 +515,8 @@ impl<Rend: WindowRenderer> View<Rend> {
     /// installs the doc poll waker. Returns `true` if the renderer is now active.
     pub fn complete_resume(&mut self) -> bool {
         let pre_active = self.renderer.is_active();
+        let pre_pending = self.renderer.is_pending();
+        rtrace(|| format!("complete_resume-enter {:?} pre_active={pre_active} pre_pending={pre_pending} doc_polled={} waker={}", self.window_id(), self.doc_polled, self.waker.is_some()));
         // polyvox-vrc R-OMQ.13: a renderer wake (a frame retried after the
         // GPU was busy, a readback shown, a rebuild) may post the paint
         // message a skip would eat. Ahead of the check: a retry answers false.
@@ -608,6 +610,7 @@ impl<Rend: WindowRenderer> View<Rend> {
         }
         self.reveal_pending = false;
         self.window.set_visible(true);
+        rtrace(|| format!("revealed {:?} os_visible={:?}", self.window.id(), self.window.is_visible()));
         self.is_visible = true;
     }
 
