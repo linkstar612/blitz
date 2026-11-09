@@ -612,6 +612,16 @@ impl<Rend: WindowRenderer> View<Rend> {
         self.window.set_visible(true);
         rtrace(|| format!("revealed {:?} os_visible={:?}", self.window.id(), self.window.is_visible()));
         self.is_visible = true;
+        // polyvox-vrc R-OMQ.14: poll the document once more now that it is
+        // shown. A hidden window paints inline (`poll`, `complete_resume`),
+        // so the `RedrawRequested` whose handler queues the next `Poll` never
+        // came, and the reveal itself may bring no WM_PAINT either. Work the
+        // document queued during that last render (effects, mounted events)
+        // then waited for a window event that never arrived: about 1 launch
+        // in 10 with no animation frame behind the reveal stayed shown but
+        // frozen, its effects never run (rmboot8b traces).
+        let window_id = self.window_id();
+        self.proxy.send_event(BlitzShellEvent::Poll { window_id });
     }
 
     /// Hide the window and drop its renderer's GPU state: the surface, the
