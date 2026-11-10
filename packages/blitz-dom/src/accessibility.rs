@@ -1,14 +1,9 @@
 use crate::{BaseDocument, ElementData, Node as BlitzDomNode, local_name};
 use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
-use icu_segmenter::{
-    GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed, WordSegmenter,
-    WordSegmenterBorrowed, options::WordBreakInvariantOptions,
-};
+use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
 use style::properties::longhands::visibility;
 
 const GRAPHEMES: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
-const WORDS: WordSegmenterBorrowed<'static> =
-    WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default());
 
 /// polyvox R-ONB.1: a text run holds at most this many characters, because
 /// AccessKit stores word starts as `u8` character indices.
@@ -27,6 +22,14 @@ struct TextRunPiece {
     word_starts: Vec<u8>,
 }
 
+/// Kana and the Han blocks: scripts written without spaces between words.
+fn is_han_or_kana(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3134F
+    )
+}
+
 /// polyvox R-ONB.1: a DOM text node as AccessKit text runs.
 ///
 /// accesskit_consumer (0.39) takes a run's length from `character_lengths`
@@ -42,17 +45,32 @@ struct TextRunPiece {
 /// `Node::word_starts` ask for: one length per grapheme cluster in UTF-8
 /// bytes, summing to the value's length (a cluster longer than 255 bytes is
 /// cut at char boundaries, since the lengths are `u8`), and the start of each
-/// word, where a word is an ICU word segment with the whitespace after it.
+/// word: a character after whitespace, and each Han or kana character, as
+/// UAX #29 splits them without a dictionary. The whitespace after a word
+/// belongs to it. ICU's word segmenter is not used here: without dictionary
+/// data it logs a warning for every Chinese or Japanese run it meets, and
+/// this runs on the UI thread at every tree rebuild.
 /// A run ends after a hard line break, as AccessKit asks, and holds at most
 /// [`MAX_RUN_CHARS`] characters, cut at a word start when one is in reach.
 /// Each run labels its parent, and the consumer joins labels with a space,
 /// so a cut adds whitespace to a name and never drops text. An empty text
 /// node gives no run at all: a run of zero characters is the case above.
 fn text_run_pieces(text: &str) -> Vec<TextRunPiece> {
-    // Characters as (byte offset, length).
+    // Characters as (byte offset, length). ASCII needs no segmenter: every
+    // byte is a character, except that CR LF is one.
     let mut chars: Vec<(usize, u8)> = Vec::new();
+    if text.is_ascii() {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            let len = if bytes[i] == b'\r' && bytes.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+            chars.push((i, len));
+            i += usize::from(len);
+        }
+    }
     let mut prev = 0;
-    for end in GRAPHEMES.segment_str(text).skip(1) {
+    let segments = (!text.is_ascii()).then(|| GRAPHEMES.segment_str(text).skip(1));
+    for end in segments.into_iter().flatten() {
         let mut at = prev;
         while end - at > usize::from(u8::MAX) {
             let mut cut = at + usize::from(u8::MAX);
@@ -71,19 +89,12 @@ fn text_run_pieces(text: &str) -> Vec<TextRunPiece> {
     };
 
     // Word starts as character indices, sorted.
+    let first_char = |i: usize| text[chars[i].0..].chars().next().unwrap_or(' ');
     let mut word_starts = vec![0usize];
-    let mut next = 0;
-    let mut breaks = WORDS.segment_str(text).peekable();
-    while let Some(seg_start) = breaks.next() {
-        let Some(&seg_end) = breaks.peek() else { break };
-        while next < chars.len() && chars[next].0 < seg_start {
-            next += 1;
-        }
-        if next == 0 || next >= chars.len() || chars[next].0 != seg_start {
-            continue;
-        }
-        if !text[seg_start..seg_end].chars().all(char::is_whitespace) {
-            word_starts.push(next);
+    for i in 1..chars.len() {
+        let (prev, cur) = (first_char(i - 1), first_char(i));
+        if !cur.is_whitespace() && (prev.is_whitespace() || is_han_or_kana(cur) || is_han_or_kana(prev)) {
+            word_starts.push(i);
         }
     }
 
