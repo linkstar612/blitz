@@ -1,12 +1,128 @@
 use crate::{BaseDocument, ElementData, Node as BlitzDomNode, local_name};
 use accesskit::{Node as AccessKitNode, NodeId, Role, Toggled, TreeId, TreeInfo, TreeUpdate};
+use icu_segmenter::{
+    GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed, WordSegmenter,
+    WordSegmenterBorrowed, options::WordBreakInvariantOptions,
+};
 use style::properties::longhands::visibility;
+
+const GRAPHEMES: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
+const WORDS: WordSegmenterBorrowed<'static> =
+    WordSegmenter::new_for_non_complex_scripts(WordBreakInvariantOptions::default());
+
+/// polyvox R-ONB.1: a text run holds at most this many characters, because
+/// AccessKit stores word starts as `u8` character indices.
+const MAX_RUN_CHARS: usize = 255;
+
+/// polyvox R-ONB.1: ids for the second and later runs of a long or
+/// multi-line text node. Blitz node ids are slab indices, far below this, and
+/// the window takes `u64::MAX`. blitz-shell ignores action requests, so no
+/// id here has to map back to a DOM node.
+const EXTRA_RUN_ID: u64 = 1 << 63;
+
+/// One AccessKit text run cut from a DOM text node.
+struct TextRunPiece {
+    value: String,
+    character_lengths: Vec<u8>,
+    word_starts: Vec<u8>,
+}
+
+/// polyvox R-ONB.1: a DOM text node as AccessKit text runs.
+///
+/// accesskit_consumer (0.39) takes a run's length from `character_lengths`
+/// alone, so a run without them is zero characters long: a position at its
+/// start is also at its end. `Position::backward_to_paragraph_start` then
+/// steps from the start of the next run back onto the same position forever,
+/// inside the platform adapter's read lock on the tree, so the UI thread's
+/// next tree update waits forever and the window stops answering. And
+/// `backward_to_character_start` subtracts one from index 0, which panics
+/// with overflow checks and leaves the run without them.
+///
+/// So every run carries what `Node::character_lengths` and
+/// `Node::word_starts` ask for: one length per grapheme cluster in UTF-8
+/// bytes, summing to the value's length (a cluster longer than 255 bytes is
+/// cut at char boundaries, since the lengths are `u8`), and the start of each
+/// word, where a word is an ICU word segment with the whitespace after it.
+/// A run ends after a hard line break, as AccessKit asks, and holds at most
+/// [`MAX_RUN_CHARS`] characters, cut at a word start when one is in reach.
+/// Each run labels its parent, and the consumer joins labels with a space,
+/// so a cut adds whitespace to a name and never drops text. An empty text
+/// node gives no run at all: a run of zero characters is the case above.
+fn text_run_pieces(text: &str) -> Vec<TextRunPiece> {
+    // Characters as (byte offset, length).
+    let mut chars: Vec<(usize, u8)> = Vec::new();
+    let mut prev = 0;
+    for end in GRAPHEMES.segment_str(text).skip(1) {
+        let mut at = prev;
+        while end - at > usize::from(u8::MAX) {
+            let mut cut = at + usize::from(u8::MAX);
+            while !text.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            chars.push((at, (cut - at) as u8));
+            at = cut;
+        }
+        chars.push((at, (end - at) as u8));
+        prev = end;
+    }
+    let is_break = |i: usize| {
+        let (at, len) = chars[i];
+        matches!(&text[at..at + usize::from(len)], "\n" | "\r\n" | "\r")
+    };
+
+    // Word starts as character indices, sorted.
+    let mut word_starts = vec![0usize];
+    let mut next = 0;
+    let mut breaks = WORDS.segment_str(text).peekable();
+    while let Some(seg_start) = breaks.next() {
+        let Some(&seg_end) = breaks.peek() else { break };
+        while next < chars.len() && chars[next].0 < seg_start {
+            next += 1;
+        }
+        if next == 0 || next >= chars.len() || chars[next].0 != seg_start {
+            continue;
+        }
+        if !text[seg_start..seg_end].chars().all(char::is_whitespace) {
+            word_starts.push(next);
+        }
+    }
+
+    let mut pieces = Vec::new();
+    let mut first = 0;
+    while first < chars.len() {
+        let limit = (first + MAX_RUN_CHARS).min(chars.len());
+        let mut last = (first..limit).find(|&i| is_break(i)).map_or(limit, |i| i + 1);
+        if last == limit && limit < chars.len() {
+            if let Some(&w) = word_starts.iter().rev().find(|&&w| w > first && w <= limit) {
+                last = w;
+            }
+        }
+        let byte_end = chars.get(last).map_or(text.len(), |c| c.0);
+        let starts_paragraph = first == 0 || is_break(first - 1);
+        let mut run_word_starts: Vec<u8> = word_starts
+            .iter()
+            .filter(|&&w| w >= first && w < last)
+            .map(|&w| (w - first) as u8)
+            .collect();
+        if starts_paragraph && run_word_starts.first() != Some(&0) {
+            run_word_starts.insert(0, 0);
+        }
+        pieces.push(TextRunPiece {
+            value: text[chars[first].0..byte_end].to_owned(),
+            character_lengths: chars[first..last].iter().map(|c| c.1).collect(),
+            word_starts: run_word_starts,
+        });
+        first = last;
+    }
+    pieces
+}
 
 impl BaseDocument {
     pub fn build_accessibility_tree(&self) -> TreeUpdate {
         let mut nodes = std::collections::HashMap::new();
         let mut window = AccessKitNode::new(Role::Window);
         let mut hidden_nodes = std::collections::HashSet::new();
+        let mut extra_runs = Vec::new();
 
         self.visit(|node_id, node| {
             if node.is_hidden_from_accessibility_tree()
@@ -23,6 +139,31 @@ impl BaseDocument {
                 .and_then(|parent_id| nodes.get_mut(&parent_id))
                 .map(|(_, parent)| parent)
                 .unwrap_or(&mut window);
+            if node.is_text_node() {
+                // polyvox R-ONB.1: see `text_run_pieces`.
+                let text = node.text_content();
+                let mut runs = Vec::new();
+                for (i, piece) in text_run_pieces(&text).into_iter().enumerate() {
+                    let id = if i == 0 {
+                        NodeId(node.id.as_u64())
+                    } else {
+                        NodeId(EXTRA_RUN_ID | (node.id.as_u64() << 20) | i as u64)
+                    };
+                    let mut run = AccessKitNode::new(Role::TextRun);
+                    run.set_value(piece.value);
+                    run.set_character_lengths(piece.character_lengths);
+                    run.set_word_starts(piece.word_starts);
+                    parent.push_child(id);
+                    parent.push_labelled_by(id);
+                    runs.push((id, run));
+                }
+                let mut runs = runs.into_iter();
+                if let Some(first) = runs.next() {
+                    nodes.insert(node_id, first);
+                }
+                extra_runs.extend(runs);
+                return;
+            }
             let (id, builder) = self.build_accessibility_node(node, parent);
 
             nodes.insert(node_id, (id, builder));
@@ -32,6 +173,7 @@ impl BaseDocument {
             .into_iter()
             .map(|(_, (id, node))| (id, node))
             .collect();
+        nodes.extend(extra_runs);
         nodes.push((NodeId(u64::MAX), window));
 
         let tree = TreeInfo::new(NodeId(u64::MAX));
@@ -73,10 +215,6 @@ impl BaseDocument {
             }
 
             set_name_and_states(&mut builder, element_data);
-        } else if node.is_text_node() {
-            builder.set_role(Role::TextRun);
-            builder.set_value(node.text_content());
-            parent.push_labelled_by(id)
         }
 
         parent.push_child(id);
