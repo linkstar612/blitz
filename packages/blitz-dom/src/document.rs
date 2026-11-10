@@ -1755,9 +1755,43 @@ impl BaseDocument {
         Some(id)
     }
 
+    /// Whether `node_id` is a text input with an IME composition open.
+    pub(crate) fn is_composing(&self, node_id: NodeId) -> bool {
+        self.nodes
+            .get(node_id)
+            .and_then(|node| node.element_data())
+            .and_then(|el| el.text_input_data())
+            .is_some_and(|input| input.editor.is_composing())
+    }
+
+    /// Keeps an open IME composition in `node_id` as committed text, the way a
+    /// browser does when the field loses focus (Blink's
+    /// `InputMethodController::WillChangeFocus` finishes the composition with
+    /// `kKeepSelection` before the focus moves). Without it the preedit stays a
+    /// composition in the old field while the IME's own end of it reaches the
+    /// field that takes focus (polyvox R-ONB.1).
+    fn finish_ime_composition(&mut self, node_id: NodeId) {
+        let Some(input) = self
+            .nodes
+            .get_mut(node_id)
+            .and_then(|node| node.data.downcast_element_mut())
+            .and_then(|el| el.text_input_data_mut())
+        else {
+            return;
+        };
+        if input.editor.is_composing() {
+            let mut font_ctx = self.font_ctx.lock().unwrap();
+            input
+                .editor
+                .driver(&mut font_ctx, &mut self.layout_ctx)
+                .finish_compose();
+        }
+    }
+
     /// Clear the focussed node
     pub fn clear_focus(&mut self) {
         if let Some(id) = self.focus_node_id {
+            self.finish_ime_composition(id);
             let shell_provider = self.shell_provider.clone();
             self.snapshot_node_and(id, ElementState::FOCUS | ElementState::FOCUSRING, |node| {
                 node.blur(shell_provider)
@@ -1784,6 +1818,7 @@ impl BaseDocument {
 
         // Remove focus from the old node
         if let Some(id) = self.focus_node_id {
+            self.finish_ime_composition(id);
             self.snapshot_node_and(id, ElementState::FOCUS | ElementState::FOCUSRING, |node| {
                 node.blur(shell_provider.clone())
             });

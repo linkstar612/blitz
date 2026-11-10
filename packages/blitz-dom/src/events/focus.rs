@@ -1,6 +1,6 @@
 use blitz_traits::events::{BlitzFocusEvent, DomEvent, DomEventData};
 
-use crate::BaseDocument;
+use crate::{BaseDocument, node::GeneratedTextInputEvent};
 
 pub(crate) fn generate_focus_events(
     doc: &mut BaseDocument,
@@ -9,6 +9,7 @@ pub(crate) fn generate_focus_events(
 ) {
     // Update focus, tracking which node was focussed before and after
     let old_focus = doc.get_focussed_node_id();
+    let was_composing = old_focus.is_some_and(|id| doc.is_composing(id));
     update_focus(doc);
     let new_focus = doc.get_focussed_node_id();
 
@@ -17,6 +18,16 @@ pub(crate) fn generate_focus_events(
     }
 
     if let Some(old_focus) = old_focus {
+        // polyvox R-ONB.1: `set_focus_to` kept the old field's composition as
+        // its text. Script hears it the way a browser reports a composition
+        // finished on blur, as an input event on that field before its blur.
+        if was_composing {
+            doc.apply_generated_text_input_event(
+                old_focus,
+                GeneratedTextInputEvent::Input,
+                &mut *dispatch_event,
+            );
+        }
         dispatch_event(DomEvent::new(
             old_focus,
             DomEventData::Blur(BlitzFocusEvent),
