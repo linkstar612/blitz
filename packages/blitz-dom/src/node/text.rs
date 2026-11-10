@@ -377,6 +377,21 @@ impl TextInputData {
                 driver.insert_or_replace_selection(&s);
                 return Some(GeneratedTextInputEvent::Input);
             }
+            // polyvox R-OMY.12: a character typed with SendInput's
+            // KEYEVENTF_UNICODE arrives as VK_PACKET, which winit reports as
+            // `Key::Unidentified` with the character only in `text` (its
+            // WM_CHAR). Every other text field on Windows takes it, so this one
+            // does too. Control characters stay out: Enter, Tab and Backspace
+            // have their own arms when they come as real keys.
+            Key::Unidentified
+                if !mods.contains(Modifiers::CONTROL) && !mods.contains(Modifiers::SUPER) =>
+            {
+                if let Some(s) = event.text.as_deref().filter(|s| !s.chars().any(char::is_control)) {
+                    blitz_traits::text_demand::demand(s);
+                    driver.insert_or_replace_selection(s);
+                    return Some(GeneratedTextInputEvent::Input);
+                }
+            }
             _ => {}
         };
 
