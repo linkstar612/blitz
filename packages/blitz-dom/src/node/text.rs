@@ -8,6 +8,59 @@ use parley::{ContentWidths, FontContext, LayoutContext};
 
 use crate::util::ACTION_MOD;
 
+/// polyvox R-PWF.4: what a clipboard chord asks of a text input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardChord {
+    Copy,
+    Cut,
+    Paste,
+}
+
+/// polyvox R-PWF.4: a paste into a single-line input, as Chromium makes it:
+/// each line break (CRLF, LF or CR) becomes one space.
+fn single_line_paste(text: &str) -> String {
+    text.replace("\r\n", "\n").replace(['\r', '\n'], " ")
+}
+
+/// polyvox R-PWF.4: Ctrl+Right on Windows, where Chromium (and every Windows
+/// text box) lands on the next word's start, past the whitespace, while
+/// parley's visual word move stops at the end of the word, as macOS and GTK
+/// do. `Cursor::next_logical_word` is that start; Ctrl+Delete already deletes
+/// up to it. Right-to-left text keeps parley's visual move. Returns whether it
+/// moved.
+#[cfg(target_os = "windows")]
+fn word_right_windows(driver: &mut parley::PlainEditorDriver<'_, TextBrush>, extend: bool) -> bool {
+    driver.refresh_layout();
+    let target = {
+        let Some(layout) = driver.editor.try_layout() else {
+            return false;
+        };
+        if layout.is_rtl() {
+            return false;
+        }
+        driver
+            .editor
+            .raw_selection()
+            .focus()
+            .next_logical_word(layout)
+            .index()
+    };
+    if extend {
+        driver.extend_selection_to_byte(target);
+    } else {
+        driver.move_to_byte(target);
+    }
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+fn word_right_windows(
+    _driver: &mut parley::PlainEditorDriver<'_, TextBrush>,
+    _extend: bool,
+) -> bool {
+    false
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 /// Parley Brush type for Blitz which contains the Blitz node id
 pub struct TextBrush {
@@ -230,30 +283,54 @@ impl TextInputData {
         let is_multiline = self.is_multiline;
         let editor = &mut self.editor;
         let mut driver = editor.driver(font_ctx, layout_ctx);
-        match event.key {
-            Key::Character(c) if action_mod && matches!(c.as_str(), "c" | "x" | "v") => {
-                match c.to_lowercase().as_str() {
-                    "c" => {
-                        if let Some(text) = driver.editor.selected_text() {
-                            let _ = shell_provider.set_clipboard_text(text.to_owned());
-                        }
+        // polyvox R-PWF.4: the clipboard chords Chromium binds on Windows, read
+        // from its own answers (headless Edge 157). The letter matches whatever
+        // its case, so Caps Lock leaves Ctrl+C a copy; Ctrl+Shift+V (paste and
+        // match style) pastes; Ctrl+Shift+C and Ctrl+Shift+X bind nothing; and
+        // Ctrl+Insert, Shift+Insert and Shift+Delete are copy, paste and cut.
+        let clip = match &event.key {
+            Key::Character(c) if action_mod => match c.to_lowercase().as_str() {
+                "c" if !shift => Some(ClipboardChord::Copy),
+                "x" if !shift => Some(ClipboardChord::Cut),
+                "v" => Some(ClipboardChord::Paste),
+                _ => None,
+            },
+            #[cfg(not(target_os = "macos"))]
+            Key::Insert if action_mod && !shift => Some(ClipboardChord::Copy),
+            #[cfg(not(target_os = "macos"))]
+            Key::Insert if shift && !action_mod => Some(ClipboardChord::Paste),
+            #[cfg(not(target_os = "macos"))]
+            Key::Delete if shift && !action_mod => Some(ClipboardChord::Cut),
+            _ => None,
+        };
+        if let Some(clip) = clip {
+            match clip {
+                ClipboardChord::Copy => {
+                    if let Some(text) = driver.editor.selected_text() {
+                        let _ = shell_provider.set_clipboard_text(text.to_owned());
                     }
-                    "x" => {
-                        if let Some(text) = driver.editor.selected_text() {
-                            let _ = shell_provider.set_clipboard_text(text.to_owned());
-                            driver.delete_selection()
-                        }
-                    }
-                    "v" => {
-                        let text = shell_provider.get_clipboard_text().unwrap_or_default();
-                        blitz_traits::text_demand::demand(&text);
-                        driver.insert_or_replace_selection(&text)
-                    }
-                    _ => unreachable!(),
                 }
-
-                return Some(GeneratedTextInputEvent::Input);
+                ClipboardChord::Cut => {
+                    if let Some(text) = driver.editor.selected_text() {
+                        let _ = shell_provider.set_clipboard_text(text.to_owned());
+                        driver.delete_selection()
+                    }
+                }
+                ClipboardChord::Paste => {
+                    let text = shell_provider.get_clipboard_text().unwrap_or_default();
+                    let text = if is_multiline {
+                        text
+                    } else {
+                        single_line_paste(&text)
+                    };
+                    blitz_traits::text_demand::demand(&text);
+                    driver.insert_or_replace_selection(&text)
+                }
             }
+
+            return Some(GeneratedTextInputEvent::Input);
+        }
+        match event.key {
             Key::Character(c) if action_mod && matches!(c.to_lowercase().as_str(), "a") => {
                 if shift {
                     driver.collapse_selection()
@@ -278,10 +355,12 @@ impl TextInputData {
             }
             Key::ArrowRight => {
                 if action_mod {
-                    if shift {
-                        driver.select_word_right()
-                    } else {
-                        driver.move_word_right()
+                    if !word_right_windows(&mut driver, shift) {
+                        if shift {
+                            driver.select_word_right()
+                        } else {
+                            driver.move_word_right()
+                        }
                     }
                 } else if shift {
                     driver.select_right()
@@ -831,5 +910,222 @@ impl TextInputData {
                 None
             }
         }
+    }
+}
+
+/// polyvox R-PWF.4: the clipboard chords, Windows' Ctrl+Right and a
+/// single-line paste, against Chromium's own answers for an
+/// `<input type=text>` holding `alpha beta-gamma delta` (headless Edge 157).
+#[cfg(test)]
+mod field_keys_tests {
+    use std::sync::Mutex;
+
+    use blitz_traits::events::{BlitzKeyEvent, KeyState};
+    use blitz_traits::shell::{ClipboardError, ShellProvider};
+    use keyboard_types::{Code, Key, Location, Modifiers};
+    use parley::{FontContext, LayoutContext};
+
+    use super::{TextBrush, TextInputData, single_line_paste};
+
+    const V: &str = "alpha beta-gamma delta";
+
+    #[derive(Default)]
+    struct Clipboard(Mutex<Option<String>>);
+
+    impl ShellProvider for Clipboard {
+        fn get_clipboard_text(&self) -> Result<String, ClipboardError> {
+            self.0.lock().unwrap().clone().ok_or(ClipboardError)
+        }
+        fn set_clipboard_text(&self, text: String) -> Result<(), ClipboardError> {
+            *self.0.lock().unwrap() = Some(text);
+            Ok(())
+        }
+    }
+
+    struct Field {
+        input: TextInputData,
+        fonts: FontContext,
+        layout: LayoutContext<TextBrush>,
+        clip: Clipboard,
+    }
+
+    impl Field {
+        fn new(text: &str) -> Self {
+            let mut f = Self {
+                input: TextInputData::new(false),
+                fonts: FontContext::new(),
+                layout: LayoutContext::new(),
+                clip: Clipboard::default(),
+            };
+            f.input.set_text(&mut f.fonts, &mut f.layout, text);
+            f
+        }
+
+        fn select(&mut self, anchor: usize, focus: usize) {
+            let mut d = self.input.editor.driver(&mut self.fonts, &mut self.layout);
+            d.move_to_byte(anchor);
+            d.extend_selection_to_byte(focus);
+        }
+
+        fn key(&mut self, key: Key, modifiers: Modifiers) {
+            let event = BlitzKeyEvent {
+                key,
+                code: Code::Unidentified,
+                modifiers,
+                location: Location::Standard,
+                is_auto_repeating: false,
+                is_composing: false,
+                state: KeyState::Pressed,
+                text: None,
+            };
+            let _ = self.input.apply_keypress_event(
+                &mut self.fonts,
+                &mut self.layout,
+                &self.clip,
+                event,
+            );
+        }
+
+        fn text(&self) -> String {
+            self.input.editor.raw_text().to_string()
+        }
+
+        /// (low, high) byte ends of the selection.
+        fn sel(&self) -> (usize, usize) {
+            let r = self.input.editor.raw_selection().text_range();
+            (r.start, r.end)
+        }
+
+        fn clip(&self) -> Option<String> {
+            self.clip.0.lock().unwrap().clone()
+        }
+
+        fn set_clip(&self, text: &str) {
+            *self.clip.0.lock().unwrap() = Some(text.to_string());
+        }
+    }
+
+    fn ch(c: &str) -> Key {
+        Key::Character(c.into())
+    }
+
+    const CTRL: Modifiers = Modifiers::CONTROL;
+    const SHIFT: Modifiers = Modifiers::SHIFT;
+
+    #[test]
+    fn caps_lock_keeps_the_clipboard_letters() {
+        let mut f = Field::new(V);
+        f.select(0, 5);
+        f.key(ch("C"), CTRL);
+        assert_eq!(
+            f.clip().as_deref(),
+            Some("alpha"),
+            "Ctrl+C with Caps Lock copies"
+        );
+        f.select(0, 5);
+        f.key(ch("X"), CTRL);
+        assert_eq!(f.text(), " beta-gamma delta", "Ctrl+X with Caps Lock cuts");
+        f.set_clip("PASTE");
+        f.key(ch("V"), CTRL);
+        assert_eq!(
+            f.text(),
+            "PASTE beta-gamma delta",
+            "Ctrl+V with Caps Lock pastes"
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_v_pastes_and_ctrl_shift_c_does_nothing() {
+        let mut f = Field::new(V);
+        f.set_clip("PASTE");
+        f.select(5, 5);
+        f.key(ch("V"), CTRL | SHIFT);
+        assert_eq!(f.text(), "alphaPASTE beta-gamma delta");
+        let mut f = Field::new(V);
+        f.set_clip("SENTINEL");
+        f.select(0, 5);
+        f.key(ch("C"), CTRL | SHIFT);
+        f.key(ch("X"), CTRL | SHIFT);
+        assert_eq!(f.clip().as_deref(), Some("SENTINEL"));
+        assert_eq!(f.text(), V);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_insert_and_delete_clipboard_keys() {
+        let mut f = Field::new(V);
+        f.set_clip("SENTINEL");
+        f.select(0, 5);
+        f.key(Key::Insert, CTRL);
+        assert_eq!(f.clip().as_deref(), Some("alpha"), "Ctrl+Insert copies");
+        f.set_clip("PASTE");
+        f.select(5, 5);
+        f.key(Key::Insert, SHIFT);
+        assert_eq!(
+            f.text(),
+            "alphaPASTE beta-gamma delta",
+            "Shift+Insert pastes"
+        );
+
+        let mut f = Field::new(V);
+        f.select(0, 5);
+        f.key(Key::Delete, SHIFT);
+        assert_eq!(
+            (f.text().as_str(), f.clip().as_deref()),
+            (" beta-gamma delta", Some("alpha")),
+            "Shift+Delete cuts"
+        );
+        let mut f = Field::new(V);
+        f.set_clip("SENTINEL");
+        f.select(5, 5);
+        f.key(Key::Delete, SHIFT);
+        assert_eq!(
+            (f.text().as_str(), f.clip().as_deref()),
+            (V, Some("SENTINEL")),
+            "with nothing selected it does nothing"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn ctrl_right_lands_on_the_next_word_start() {
+        let mut f = Field::new(V);
+        f.select(0, 0);
+        f.key(Key::ArrowRight, CTRL);
+        assert_eq!(f.sel(), (6, 6), "past the space to beta");
+        f.key(Key::ArrowRight, CTRL);
+        assert_eq!(f.sel(), (10, 10), "the hyphen is a stop");
+        f.key(Key::ArrowRight, CTRL);
+        assert_eq!(f.sel(), (11, 11));
+        f.select(5, 5);
+        f.key(Key::ArrowRight, CTRL);
+        assert_eq!(
+            f.sel(),
+            (6, 6),
+            "from the end of a word, the next word's start"
+        );
+        f.select(0, 0);
+        f.key(Key::ArrowRight, CTRL | SHIFT);
+        assert_eq!(f.sel(), (0, 6), "Ctrl+Shift+Right selects to it");
+        // Ctrl+Left was already Chromium's.
+        f.select(22, 22);
+        f.key(Key::ArrowLeft, CTRL);
+        assert_eq!(f.sel(), (17, 17));
+    }
+
+    #[test]
+    fn a_single_line_paste_turns_line_breaks_into_spaces() {
+        assert_eq!(single_line_paste("a\nb"), "a b");
+        assert_eq!(single_line_paste("a\r\nb\rc"), "a b c");
+        let mut f = Field::new(V);
+        f.set_clip("a\r\nb");
+        f.select(5, 5);
+        f.key(ch("v"), CTRL);
+        assert_eq!(f.text(), "alphaa b beta-gamma delta");
+        let mut area = Field::new("");
+        area.input.is_multiline = true;
+        area.set_clip("a\nb");
+        area.key(ch("v"), CTRL);
+        assert_eq!(area.text(), "a\nb", "a textarea keeps its line breaks");
     }
 }
