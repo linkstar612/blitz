@@ -1,7 +1,7 @@
 //! Versioned storage for the nodes of the DOM tree.
 
 use std::ops::{Index, IndexMut};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use blitz_traits::node_id::NodeId;
 use slotmap::{Key as _, KeyData, SlotMap};
@@ -22,6 +22,22 @@ fn to_key(id: NodeId) -> NodeKey {
 #[inline(always)]
 fn to_id(key: NodeKey) -> NodeId {
     NodeId::from_u64(key.data().as_ffi())
+}
+
+/// Live nodes across every document in the process (polyvox R-OQP.1).
+static LIVE_NODES: AtomicUsize = AtomicUsize::new(0);
+/// Nodes created since launch across every document in the process.
+static CREATED_NODES: AtomicU64 = AtomicU64::new(0);
+
+/// `(live, created)`: the nodes alive in every document of this process, and
+/// the nodes created since launch. A live count that only climbs is a node
+/// leak; the created count over uptime is the churn rate. Relaxed atomics, so
+/// any thread can read them, a memory report included (polyvox R-OQP.1).
+pub fn node_counters() -> (usize, u64) {
+    (
+        LIVE_NODES.load(Ordering::Relaxed),
+        CREATED_NODES.load(Ordering::Relaxed),
+    )
 }
 
 /// The versioned map in which the nodes of the DOM tree are stored, backed by
@@ -98,12 +114,18 @@ impl NodeTree {
 
     /// Insert a node constructed with knowledge of its own id.
     pub(crate) fn insert_with_key(&mut self, f: impl FnOnce(NodeId) -> Node) -> NodeId {
+        LIVE_NODES.fetch_add(1, Ordering::Relaxed);
+        CREATED_NODES.fetch_add(1, Ordering::Relaxed);
         to_id(self.map.insert_with_key(|key| f(to_id(key))))
     }
 
     /// Remove the node with the given id, returning it if it was still live.
     pub(crate) fn remove(&mut self, id: NodeId) -> Option<Node> {
-        self.map.remove(to_key(id))
+        let removed = self.map.remove(to_key(id));
+        if removed.is_some() {
+            LIVE_NODES.fetch_sub(1, Ordering::Relaxed);
+        }
+        removed
     }
 
     /// Iterate over all live `(NodeId, &Node)` pairs.
@@ -132,5 +154,13 @@ impl IndexMut<NodeId> for NodeTree {
     #[inline]
     fn index_mut(&mut self, id: NodeId) -> &mut Node {
         &mut self.map[to_key(id)]
+    }
+}
+
+impl Drop for NodeTree {
+    /// A dropped document takes its nodes with it without passing through
+    /// [`NodeTree::remove`], so the live counter gives them back here.
+    fn drop(&mut self) {
+        LIVE_NODES.fetch_sub(self.map.len(), Ordering::Relaxed);
     }
 }
