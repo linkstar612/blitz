@@ -90,6 +90,18 @@ impl MutationWriter<'_> {
             self.state.node_id_mapping.resize(element_id + 1, None);
         }
 
+        // polyvox R-OQP.1: Dioxus only hands an element id out again once the
+        // node it named is gone from the VirtualDom, so a detached old node is
+        // garbage from here on. Drop it, with its subtree, before re-pointing
+        // the id. Only `assign_node_id` used to, so every text node,
+        // placeholder and template root reused through `map_new_node` left its
+        // predecessor in the node tree for the life of the document.
+        if let Some(old_node_id) = self.state.node_id_mapping[element_id]
+            && old_node_id != node_id
+        {
+            self.drop_if_orphaned(old_node_id, Some(node_id));
+        }
+
         // Set the new mapping (and keep the reverse mapping in sync)
         if let Some(old_node_id) = self.state.node_id_mapping[element_id].replace(node_id)
             && self.state.element_id_mapping.get(&old_node_id) == Some(&ElementId(element_id))
@@ -99,6 +111,35 @@ impl MutationWriter<'_> {
         self.state
             .element_id_mapping
             .insert(node_id, ElementId(element_id));
+    }
+
+    /// Drop `node_id` and its subtree when nothing can reach it any more: it
+    /// has no parent, it is not on the mutation stack, and it is not `keep`
+    /// or an ancestor of `keep`. Clears the id mappings of every dropped node
+    /// so a reused slot never aliases it (polyvox R-OQP.1).
+    fn drop_if_orphaned(&mut self, node_id: NodeId, keep: Option<NodeId>) {
+        if self.state.stack.contains(&node_id) {
+            return;
+        }
+        if let Some(keep) = keep {
+            let mut cursor = Some(keep);
+            while let Some(id) = cursor {
+                if id == node_id {
+                    return;
+                }
+                cursor = self.docm.doc.get_node(id).and_then(|node| node.parent);
+            }
+        }
+        let state = &mut *self.state;
+        self.docm
+            .remove_node_if_unparented_with(node_id, &mut |dropped_node_id| {
+                if let Some(element_id) = state.element_id_mapping.remove(&dropped_node_id)
+                    && state.node_id_mapping.get(element_id.0).copied().flatten()
+                        == Some(dropped_node_id)
+                {
+                    state.node_id_mapping[element_id.0] = None;
+                }
+            });
     }
 
     /// Create a ElementId -> NodeId mapping and push the node to the stack
@@ -118,25 +159,10 @@ impl WriteMutations for MutationWriter<'_> {
     fn assign_node_id(&mut self, path: &'static [u8], id: ElementId) {
         trace!("assign_node_id path:{:?} id:{}", path, id.0);
 
-        // If there is an existing node already mapped to that ID and it has no parent, then drop it.
-        // Dropping the node also drops all of its descendants, so clear the mappings of every
-        // dropped node to prevent them dangling and aliasing onto unrelated nodes when the
-        // underlying slab slots are reused.
-        // TODO: more automated GC/ref-counted semantics for node lifetimes
-        if let Some(node_id) = self.state.try_element_to_node_id(id) {
-            let state = &mut *self.state;
-            self.docm
-                .remove_node_if_unparented_with(node_id, &mut |dropped_node_id| {
-                    if let Some(element_id) = state.element_id_mapping.remove(&dropped_node_id)
-                        && state.node_id_mapping.get(element_id.0).copied().flatten()
-                            == Some(dropped_node_id)
-                    {
-                        state.node_id_mapping[element_id.0] = None;
-                    }
-                });
-        }
-
-        // Map the node at specified path
+        // Map the node at specified path. If an existing node is mapped to
+        // that ID and nothing reaches it any more, `set_id_mapping` drops it
+        // and its descendants first and clears their mappings, so they cannot
+        // dangle or alias onto unrelated nodes when their slots are reused.
         self.set_id_mapping(self.load_child(path), id);
     }
 
@@ -184,6 +210,10 @@ impl WriteMutations for MutationWriter<'_> {
         let new_node_ids = self.state.m_stack_nodes(m);
         let anchor_node_id = self.load_child(path);
         self.docm.replace_node_with(anchor_node_id, &new_node_ids);
+        // polyvox R-OQP.1: the placeholder came from the template by path and
+        // never had an element id of its own, so no later mutation can name
+        // it, and nothing else would ever drop it.
+        self.drop_if_orphaned(anchor_node_id, None);
     }
 
     fn remove_node(&mut self, id: ElementId) {
