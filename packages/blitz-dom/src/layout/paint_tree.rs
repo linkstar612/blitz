@@ -31,7 +31,12 @@ use taffy::{Point, Rect};
 /// hoisted by Taffy, otherwise `layout_parent`, which is set for every layout
 /// child by `resolve_layout_children`, anonymous blocks included).
 pub fn hoisted_child_position(tree: &NodeTree, sc_root_id: NodeId, child_id: NodeId) -> Point<f32> {
-    let child = &tree[child_id];
+    // A hoisted child can outlive its node: a page swap drops the old nodes
+    // (polyvox R-OQP.1) and a hit test can run before the next layout rebuilds
+    // the stacking context. A dropped node has no position.
+    let Some(child) = tree.get(child_id) else {
+        return Point::ZERO;
+    };
     let mut position = Point::ZERO;
     let mut current = child.containing_block();
 
@@ -143,8 +148,12 @@ impl StackingContext {
             return cached;
         }
 
-        let child_rect = |child: &HoistedPaintChild| -> Rect<f32> {
-            let node = &tree[child.node_id];
+        // Children whose node was dropped since the last layout (a page swap,
+        // polyvox R-OQP.1) are skipped. Indexing them panicked with "invalid
+        // SlotMap key used" when a hit test ran between the drop and the next
+        // layout (polyvox R-OQR.1).
+        let child_rect = |child: &HoistedPaintChild| -> Option<Rect<f32>> {
+            let node = tree.get(child.node_id)?;
             let position = child.position(tree, sc_root_id);
             let location = node.final_layout().location;
             let mut overflow = *node.scrollable_overflow();
@@ -153,26 +162,37 @@ impl StackingContext {
             }
             let left = position.x + location.x;
             let top = position.y + location.y;
-            Rect {
+            Some(Rect {
                 left: left + (overflow.x0 / scale) as f32,
                 top: top + (overflow.y0 / scale) as f32,
                 right: left + (overflow.x1 / scale) as f32,
                 bottom: top + (overflow.y1 / scale) as f32,
-            }
+            })
         };
 
-        let mut area = Rect::ZERO;
-        if let Some((first, rest)) = self.children.split_first() {
-            area = child_rect(first);
-            for child in rest {
-                let pos = child_rect(child);
-                area.left = area.left.min(pos.left);
-                area.top = area.top.min(pos.top);
-                area.right = area.right.max(pos.right);
-                area.bottom = area.bottom.max(pos.bottom);
-            }
+        let mut area: Option<Rect<f32>> = None;
+        let mut stale = false;
+        for child in &self.children {
+            let Some(pos) = child_rect(child) else {
+                stale = true;
+                continue;
+            };
+            area = Some(match area {
+                None => pos,
+                Some(a) => Rect {
+                    left: a.left.min(pos.left),
+                    top: a.top.min(pos.top),
+                    right: a.right.max(pos.right),
+                    bottom: a.bottom.max(pos.bottom),
+                },
+            });
         }
-        self.hoisted_content_bbox.set((generation, area));
+        let area = area.unwrap_or(Rect::ZERO);
+        // Do not memoise a box built from a stale child list: the next layout
+        // rebuilds the list without bumping past this generation's stamp.
+        if !stale {
+            self.hoisted_content_bbox.set((generation, area));
+        }
         area
     }
 
