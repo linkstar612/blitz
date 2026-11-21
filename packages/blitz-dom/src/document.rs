@@ -1033,16 +1033,29 @@ impl BaseDocument {
                 children.retain(|id| *id != node_id);
             }
             holder.hoisted_children.get_mut().retain(|id| *id != node_id);
-            // Only a container still in the document gets damage: one outside
-            // it is being dropped or detached itself (a subtree drops root
-            // first, so its anonymous blocks can outlive their parent for a
-            // moment), its ancestor chain may already hold a dropped node, and
-            // it is rebuilt when it is inserted again.
-            if holder.flags.is_in_document() {
+            // Damage walks the ancestors, so only a container whose whole
+            // ancestor chain is still live gets it. A subtree drops root first,
+            // so an anonymous block can outlive its owner for a moment (still
+            // flagged in the document); such a container is going away and
+            // needs no rebuild, only the id gone from its lists.
+            if self.ancestors_live(holder_id) {
+                let holder = &mut self.nodes[holder_id];
                 holder.insert_damage(ALL_DAMAGE);
                 holder.mark_ancestors_dirty();
             }
         }
+    }
+
+    /// Whether every ancestor of `node_id` is still a live node.
+    fn ancestors_live(&self, node_id: NodeId) -> bool {
+        let mut current = self.get_node(node_id).and_then(|node| node.parent);
+        while let Some(id) = current {
+            match self.get_node(id) {
+                Some(node) => current = node.parent,
+                None => return false,
+            }
+        }
+        true
     }
 
     pub(crate) fn drop_node_ignoring_parent(&mut self, node_id: NodeId) -> Option<Node> {
