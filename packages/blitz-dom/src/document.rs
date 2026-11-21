@@ -1003,6 +1003,41 @@ impl BaseDocument {
         self.scrollbar_activity.remove(&node_id);
     }
 
+    /// Take `node_id` out of the layout caches of the nodes that point at it,
+    /// before it is dropped (polyvox R-OQP.1).
+    ///
+    /// A node's layout container (its layout parent, often an anonymous block
+    /// or a `display: contents` ancestor's container rather than its DOM
+    /// parent) and its out-of-flow containing block keep their child lists
+    /// until the next layout pass rebuilds them. A node detached and dropped in
+    /// the same mutation batch (an element id the Dioxus writer reuses at once)
+    /// left its id in those lists, which the next pass then indexed: "layout
+    /// child ... is not in the slab". The containers are damaged here so the
+    /// pass rebuilds them as well.
+    fn unlink_layout_refs(&mut self, node_id: NodeId) {
+        let Some(node) = self.get_node(node_id) else {
+            return;
+        };
+        let holders = [node.layout_parent.get(), node.oof_containing_block.get()];
+        for holder_id in holders.into_iter().flatten() {
+            if holder_id == node_id {
+                continue;
+            }
+            let Some(holder) = self.get_node_mut(holder_id) else {
+                continue;
+            };
+            if let Some(children) = holder.layout_children.get_mut().as_mut() {
+                children.retain(|id| *id != node_id);
+            }
+            if let Some(children) = holder.paint_children.get_mut().as_mut() {
+                children.retain(|id| *id != node_id);
+            }
+            holder.hoisted_children.get_mut().retain(|id| *id != node_id);
+            holder.insert_damage(ALL_DAMAGE);
+            holder.mark_ancestors_dirty();
+        }
+    }
+
     pub(crate) fn drop_node_ignoring_parent(&mut self, node_id: NodeId) -> Option<Node> {
         self.drop_node_ignoring_parent_with(node_id, &mut |_| {})
     }
@@ -1014,6 +1049,7 @@ impl BaseDocument {
         node_id: NodeId,
         on_drop: &mut dyn FnMut(NodeId),
     ) -> Option<Node> {
+        self.unlink_layout_refs(node_id);
         let mut node = self.remove_node_from_tree(node_id);
         if let Some(node) = &mut node {
             on_drop(node_id);

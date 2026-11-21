@@ -10,6 +10,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use blitz_dom::{Document as _, DocumentConfig};
+use blitz_traits::shell::{ColorScheme, Viewport};
 use dioxus::prelude::*;
 use dioxus_native_dom::DioxusDocument;
 
@@ -38,15 +39,27 @@ fn app() -> Element {
     }
 }
 
+/// One render, then a layout pass. In debug builds the pass checks that every
+/// layout child it caches is still a live node, which is how a node dropped in
+/// the same batch that detached it was caught (the native settings sweep hit
+/// "layout child ... is not in the slab").
 fn rerender(doc: &mut DioxusDocument) {
     doc.vdom.mark_dirty(ScopeId::APP);
     doc.poll(None);
+    doc.inner_mut().resolve(0.0);
 }
 
 #[test]
 fn churning_renders_keep_the_node_count_flat() {
-    let mut doc = DioxusDocument::new(VirtualDom::new(app), DocumentConfig::default());
+    let mut doc = DioxusDocument::new(
+        VirtualDom::new(app),
+        DocumentConfig {
+            viewport: Some(Viewport::new(400, 300, 1.0, ColorScheme::Light)),
+            ..Default::default()
+        },
+    );
     doc.initial_build();
+    doc.inner_mut().resolve(0.0);
     for _ in 0..20 {
         rerender(&mut doc);
     }
