@@ -1033,8 +1033,15 @@ impl BaseDocument {
                 children.retain(|id| *id != node_id);
             }
             holder.hoisted_children.get_mut().retain(|id| *id != node_id);
-            holder.insert_damage(ALL_DAMAGE);
-            holder.mark_ancestors_dirty();
+            // Only a container still in the document gets damage: one outside
+            // it is being dropped or detached itself (a subtree drops root
+            // first, so its anonymous blocks can outlive their parent for a
+            // moment), its ancestor chain may already hold a dropped node, and
+            // it is rebuilt when it is inserted again.
+            if holder.flags.is_in_document() {
+                holder.insert_damage(ALL_DAMAGE);
+                holder.mark_ancestors_dirty();
+            }
         }
     }
 
