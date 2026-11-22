@@ -10,6 +10,8 @@ mod hit_clip_tests;
 #[cfg(test)]
 mod stale_hoisted_tests;
 #[cfg(test)]
+mod form_owner_dropped_tests;
+#[cfg(test)]
 mod fork_gap_tests;
 
 use crate::util::Point;

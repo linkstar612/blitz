@@ -898,18 +898,28 @@ impl<'doc> DocumentMutator<'doc> {
             self.doc.has_canvas = self.doc.compute_has_canvas();
         }
 
+        // polyvox R-OQU.1: a node queued here can be dropped later in the same
+        // batch (a page swap creates a control, then drops its subtree before
+        // the mutator flushes). Indexing it panicked with "invalid SlotMap key
+        // used" at form.rs (the Beta 5 Speaker Identity crash), so skip it.
         if let Some(id) = self.title_node {
-            let title = self.doc.nodes[id].text_content();
-            self.doc.shell_provider.set_window_title(title);
+            if let Some(node) = self.doc.get_node(id) {
+                let title = node.text_content();
+                self.doc.shell_provider.set_window_title(title);
+            }
         }
 
         // Add/Update inline stylesheets (<style> elements)
         for id in self.style_nodes.drain() {
-            self.doc.process_style_element(id);
+            if self.doc.get_node(id).is_some() {
+                self.doc.process_style_element(id);
+            }
         }
 
         for id in self.form_nodes.drain() {
-            self.doc.reset_form_owner(id);
+            if self.doc.get_node(id).is_some() {
+                self.doc.reset_form_owner(id);
+            }
         }
 
         #[cfg(feature = "autofocus")]
